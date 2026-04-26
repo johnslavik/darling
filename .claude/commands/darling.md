@@ -322,7 +322,7 @@ Parse `alias` from `$ARGUMENTS`. Run the **Remove repo** snippet.
 
 ### workspace-for-issue
 
-#### Step 1 — extract issue number and extra instructions
+#### Extract — issue number and extra instructions
 
 Parse `$ARGUMENTS` into two parts:
 - **issue_ref**: the leading token(s) that identify the issue — a bare number, `gh-NNNNNN`, or a GitHub URL ending in `/issues/NNNNNN`
@@ -334,49 +334,100 @@ Extraction rules:
 - GitHub URL → extract the number after `/issues/`
 - Any text following the issue ref → extra_instructions (preserve verbatim)
 
-#### Step 2 — check for existing workspace
+#### Plan — resolve everything in one shot
 
-Run the **Find a workspace by issue number** snippet. If result is not `null`: note the existing workspace fields, **skip Steps 3, 5, and 6**, go directly to Step 4 then Step 7.
+Run this script. It outputs a JSON plan with all values needed to decide what to do next.
 
-#### Step 3 — resolve repo
+```python
+python3 - << 'PLAN_EOF'
+import json, pathlib, re, subprocess, sys, datetime
 
-1. Run `git rev-parse --show-toplevel`. If it succeeds → repo_path is that value.
-2. Else run **Read repos**:
-   - 1 entry → use it automatically.
-   - Multiple → ask the user to pick.
-   - 0 → ask the user for the path.
+issue_number = "<issue_number>"
 
-#### Step 4 — fetch issue details
+# --- existing workspace? ---
+ws_dir = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
+all_ws = [json.loads(f.read_text()) for f in ws_dir.glob("*.json")]
+existing = next((w for w in all_ws if f"gh-{issue_number}" in w["branch"] or f"#{issue_number}" in w.get("description", "")), None)
 
-Derive owner/repo from repo_path: run `git -C <repo_path> remote get-url origin` and parse `github.com/<owner>/<repo_name>`.
+# --- repo path ---
+r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+if r.returncode == 0:
+    repo_path = r.stdout.strip()
+    errors = []
+else:
+    repos_p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+    repos = json.loads(repos_p.read_text())["repos"] if repos_p.exists() else []
+    if len(repos) == 1:
+        repo_path = repos[0]["path"]
+        errors = []
+    else:
+        print(json.dumps({"error": "cannot resolve repo", "repos": repos}))
+        sys.exit(1)
 
-Run: `gh issue view <issue_number> --repo <owner>/<repo_name> --json title,number,body`
+# --- remote → owner/repo ---
+r2 = subprocess.run(["git", "-C", repo_path, "remote", "get-url", "origin"], capture_output=True, text=True)
+remote = r2.stdout.strip()
+m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", remote)
+owner, repo_name = (m.group(1), m.group(2)) if m else ("", "")
 
-#### Step 5 — derive names
+# --- fetch issue ---
+if existing:
+    issue = {"title": existing["description"].split(": ", 1)[-1], "number": int(issue_number), "body": ""}
+else:
+    r3 = subprocess.run(
+        ["gh", "issue", "view", issue_number, "--repo", f"{owner}/{repo_name}", "--json", "title,number,body"],
+        capture_output=True, text=True)
+    issue = json.loads(r3.stdout) if r3.returncode == 0 else {"title": "", "number": int(issue_number), "body": ""}
+    errors = [] if r3.returncode == 0 else [r3.stderr.strip()]
 
-Run the **Derive slug and names** snippet with the issue title and number. Also set:
-- **worktree_path**: `<parent_of_repo_path>/<repo_name>-worktrees/gh-<issue_number>`
+# --- derive names ---
+slug = re.sub(r"[^a-z0-9]+", "-", issue["title"].lower()).strip("-")[:50]
+branch = existing["branch"] if existing else f"gh-{issue_number}-{slug}"
+workspace_name = branch[:60]
+repo_parent = str(pathlib.Path(repo_path).parent)
+worktree_path = existing["worktree_path"] if existing else f"{repo_parent}/{repo_name}-worktrees/gh-{issue_number}"
 
-#### Step 6 — create the workspace
+# --- zmx sessions ---
+r4 = subprocess.run(["zmx", "list", "--short"], capture_output=True, text=True)
+zmx_sessions = [l.strip() for l in r4.stdout.splitlines() if l.strip()]
+session_exists = workspace_name in zmx_sessions
+
+plan = {
+    "action": "resume" if existing else "create",
+    "issue_number": issue_number,
+    "issue_title": issue["title"],
+    "issue_body": issue["body"],
+    "repo_path": repo_path,
+    "owner": owner,
+    "repo_name": repo_name,
+    "branch": branch,
+    "workspace_name": workspace_name,
+    "worktree_path": worktree_path,
+    "existing_workspace": existing,
+    "session_exists": session_exists,
+    "zmx_sessions": zmx_sessions,
+    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+    "errors": errors,
+}
+print(json.dumps(plan, indent=2))
+PLAN_EOF
+```
+
+Read the JSON output and proceed:
+
+- **`action == "resume"` and `session_exists == true`**: run `zmx history <workspace_name> | tail -50` to check state. If Claude actively running → tell user and stop. If idle/finished → relaunch via `zmx run`. If broken → `zmx kill <workspace_name> --force`, then relaunch via `zmx run`.
+- **`action == "resume"` and `session_exists == false`**: relaunch via `zmx run` (no worktree/record creation needed).
+- **`action == "create"`**: create worktree, write record, then launch.
+
+For **create**:
 
 ```bash
 git -C <repo_path> worktree add -b <branch> <worktree_path> main
-zmx attach <workspace_name>   # cwd = worktree_path
 ```
 
-Run the **Write a workspace record** snippet with all derived values. Use `python3 -c "import datetime; print(datetime.datetime.utcnow().isoformat()+'Z')"` for `created_at`.
+Write the workspace record using the **Write a workspace record** snippet with values from the plan JSON.
 
-#### Step 6.5 — check for an existing ZMX session
-
-Run `zmx list`. Look for a session named `<workspace_name>`.
-
-- **Session exists**: run `zmx tail -n 50 <workspace_name>` to assess state:
-  - Claude actively running → tell the user and stop.
-  - Claude idle/finished → proceed to Step 7.
-  - Broken/stalled → `zmx kill <workspace_name> --force`, then proceed.
-- **No session**: proceed.
-
-#### Step 7 — launch Claude in the session
+#### Launch Claude in the session
 
 Compose a self-contained prompt (the receiving Claude has no memory of this conversation):
 
@@ -386,17 +437,28 @@ Compose a self-contained prompt (the receiving Claude has no memory of this conv
 4. Extra instructions verbatim (high priority — place last)
 5. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
 
-Write to temp file and pipe:
+Write to temp file and launch entirely in the background — never call `zmx attach` (interactive, leaks to caller's terminal):
 
 ```bash
 cat > /tmp/darling-<issue_number>.txt << 'DARLING_EOF'
 <prompt content>
 DARLING_EOF
 
-zmx run -d <workspace_name> sh -c 'claude < /tmp/darling-<issue_number>.txt'
+zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "Bash,Read,Edit,Write,Agent" < /tmp/darling-<issue_number>.txt'
 ```
 
-Insert any desired permission flags between `claude` and `<`.
+`zmx run` creates the session if it does not exist. The `-d` flag detaches it completely — no terminal leakage.
+
+#### Open a Ghostty window attached to the session
+
+After delegation, open a new Ghostty window attached to the session so the user can watch:
+
+```bash
+open -na Ghostty.app --args -e "zmx attach <workspace_name>"
+```
+
+Tell the user:
+> Delegated. New Ghostty window attached. Detach with `Ctrl+\` (keeps session running) or `zmx detach` (detaches all clients). Re-attach: `zmx attach <workspace_name>`.
 
 **Do not ask for confirmation before creating or delegating.**
 
@@ -404,9 +466,9 @@ Insert any desired permission flags between `claude` and `<`.
 
 ## Execution narration
 
-Before each step, output:
+Before each action, output one line:
 ```
-→ Step N: <what and why>
+→ <what and why>
 ```
 After it completes, output the key result in one line.
 
