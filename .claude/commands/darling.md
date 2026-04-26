@@ -163,7 +163,7 @@ Glob and read all workspace JSON files. Look for any where:
 - `branch` contains `gh-<issue_number>`
 - `description` contains `#<issue_number>`
 
-If found: show the workspace details and stop — do not create a new one.
+If found: note the existing workspace details, **skip Steps 3, 5, and 6** (no repo resolution, no name derivation, no worktree/session creation), then **go directly to Step 4** to fetch issue details and **Step 7** to delegate. The existing workspace fields (worktree_path, zmx_session, branch, repo_path) are already known.
 
 #### Step 3 — resolve repo
 
@@ -208,6 +208,21 @@ zmx attach <workspace_name>
 
 Write the workspace JSON to `~/.local/share/darling/workspaces/<workspace_name>.json`.
 
+#### Step 6.5 — check for an existing ZMX session
+
+Before launching anything, run:
+```bash
+zmx list
+```
+
+Look for a session whose name matches `<workspace_name>`.
+
+- **Session exists**: run `zmx tail -n 50 <workspace_name>` to read recent output and assess state:
+  - If Claude is actively running (output shows tool calls, reasoning, etc.) → tell the user it's already working and stop.
+  - If Claude finished or is idle → note this; proceed to Step 7 to send a new prompt.
+  - If the session looks broken/stalled → kill it first (`zmx kill <workspace_name> --force`), then proceed.
+- **No session**: proceed directly to Step 7 (attach will create it).
+
 #### Step 7 — launch Claude in the session
 
 Compose a task prompt string. The prompt must be self-contained — the Claude instance receiving it has no memory of this conversation. Include:
@@ -230,7 +245,25 @@ zmx run -d <workspace_name> sh -c 'claude < /tmp/darling-<issue_number>.txt'
 
 Note: insert any desired permission flags between `claude` and `<` — use whatever the project or user has configured.
 
-**Do not ask for confirmation before creating.**
+**Do not ask for confirmation before creating or delegating.**
+
+---
+
+## Execution narration
+
+For every step you execute, output a one-line header before running it so the user can follow along:
+
+```
+→ Step N: <what you are about to do and why>
+```
+
+Examples:
+- `→ Step 1: Parsing issue number from arguments`
+- `→ Step 2: Checking for existing workspace matching gh-148587`
+- `→ Step 4: Fetching issue title and body from GitHub (needed for the prompt)`
+- `→ Step 7: Writing prompt to temp file and piping into ZMX session`
+
+After each step completes, output the key result in one line. This makes the flow transparent without being verbose.
 
 ---
 
