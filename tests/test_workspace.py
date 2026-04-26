@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -9,8 +9,8 @@ from darling import store
 from darling.config import Config
 from darling.workspace import _slugify, create, delete
 
-
 # ── Slugify ───────────────────────────────────────────────────────────────────
+
 
 def test_slugify_basic():
     assert _slugify("Fix JWT token expiry") == "fix-jwt-token-expiry"
@@ -30,6 +30,7 @@ def test_slugify_collapses_spaces():
 
 
 # ── create ────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture()
 def config(tmp_path: Path) -> Config:
@@ -83,12 +84,16 @@ def test_create_workspace_slug_from_description(config):
 
 # ── delete ────────────────────────────────────────────────────────────────────
 
+
 def test_delete_workspace_kills_zmx_and_removes_worktree_and_writes_kb(config):
     # Set up an active workspace in the store
     ws = store.new_workspace(
-        name="bye-ws", description="Going away",
-        repo_path="/tmp/repo", branch="bye-branch",
-        worktree_path="/tmp/worktrees/bye-ws", zmx_session="bye-ws",
+        name="bye-ws",
+        description="Going away",
+        repo_path="/tmp/repo",
+        branch="bye-branch",
+        worktree_path="/tmp/worktrees/bye-ws",
+        zmx_session="bye-ws",
     )
     store.write_workspace(config.data_dir, ws)
 
@@ -98,7 +103,7 @@ def test_delete_workspace_kills_zmx_and_removes_worktree_and_writes_kb(config):
         patch("darling.workspace.intelligence.summarize", return_value="Did some work."),
         patch("darling.workspace.subprocess.run") as mock_run,
     ):
-        result = delete(config, ws, delete_branch=False)
+        delete(config, ws, delete_branch=False)
 
     mock_kill.assert_called_once_with("bye-ws")
 
@@ -122,8 +127,12 @@ def test_delete_workspace_kills_zmx_and_removes_worktree_and_writes_kb(config):
 
 def test_delete_workspace_deletes_branch_when_requested(config):
     ws = store.new_workspace(
-        name="rm-branch", description="d", repo_path="/tmp/r",
-        branch="rm-branch", worktree_path="/tmp/w", zmx_session="rm-branch",
+        name="rm-branch",
+        description="d",
+        repo_path="/tmp/r",
+        branch="rm-branch",
+        worktree_path="/tmp/w",
+        zmx_session="rm-branch",
     )
     store.write_workspace(config.data_dir, ws)
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from darling import intelligence
 
 
@@ -30,9 +28,27 @@ def test_summarize_returns_default_for_empty_scrollback():
 
 def test_search_kb_returns_matching_indices():
     entries = [
-        {"name": "auth-fix", "description": "Fix JWT", "scrollback_summary": "fixed auth", "notes": "", "completed_at": "2026-01-01"},
-        {"name": "ui-work", "description": "Button redesign", "scrollback_summary": "updated CSS", "notes": "", "completed_at": "2026-01-02"},
-        {"name": "db-migration", "description": "Migrate users table", "scrollback_summary": "ran migration", "notes": "", "completed_at": "2026-01-03"},
+        {
+            "name": "auth-fix",
+            "description": "Fix JWT",
+            "scrollback_summary": "fixed auth",
+            "notes": "",
+            "completed_at": "2026-01-01",
+        },
+        {
+            "name": "ui-work",
+            "description": "Button redesign",
+            "scrollback_summary": "updated CSS",
+            "notes": "",
+            "completed_at": "2026-01-02",
+        },
+        {
+            "name": "db-migration",
+            "description": "Migrate users table",
+            "scrollback_summary": "ran migration",
+            "notes": "",
+            "completed_at": "2026-01-03",
+        },
     ]
     with _mock_anthropic("0,2"):
         result = intelligence.search_kb(entries, "authentication and database", "claude-opus-4-5")
@@ -42,7 +58,15 @@ def test_search_kb_returns_matching_indices():
 
 
 def test_search_kb_returns_empty_for_none_response():
-    entries = [{"name": "x", "description": "y", "scrollback_summary": "", "notes": "", "completed_at": ""}]
+    entries = [
+        {
+            "name": "x",
+            "description": "y",
+            "scrollback_summary": "",
+            "notes": "",
+            "completed_at": "",
+        },
+    ]
     with _mock_anthropic("none"):
         result = intelligence.search_kb(entries, "something unrelated", "claude-opus-4-5")
     assert result == []
@@ -55,10 +79,18 @@ def test_search_kb_returns_empty_for_no_entries():
 
 def test_create_skill_returns_markdown_draft():
     entries = [
-        {"name": "auth-fix", "description": "Fix JWT", "scrollback_summary": "used PyJWT", "notes": "always pin version", "pr_outcome": "merged"},
+        {
+            "name": "auth-fix",
+            "description": "Fix JWT",
+            "scrollback_summary": "used PyJWT",
+            "notes": "always pin version",
+            "pr_outcome": "merged",
+        },
     ]
     with _mock_anthropic("## jwt-auth skill\nAlways pin PyJWT to a specific version."):
-        result = intelligence.create_skill(entries, "jwt-auth", "JWT authentication", "claude-opus-4-5")
+        result = intelligence.create_skill(
+            entries, "jwt-auth", "JWT authentication", "claude-opus-4-5"
+        )
     assert "jwt-auth" in result or "PyJWT" in result
 
 

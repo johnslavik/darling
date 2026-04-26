@@ -1,0 +1,13 @@
+create_workspace
+get_workspace
+delete_workspace
+link_pr
+enqueue_task
+get_next_task
+complete_task
+check_prs
+add_note
+search_history
+create_skill_from_notes
+read_workspace
+find_kb_entry

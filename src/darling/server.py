@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mcp.server.fastmcp import FastMCP
 
@@ -31,6 +31,7 @@ def _search_kb(query: str) -> list[dict]:
 
 
 # ── Workspace lifecycle ───────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def create_workspace(
@@ -74,19 +75,21 @@ def list_workspaces() -> list[dict]:
         created = ws.get("created_at", "")
         if created:
             try:
-                delta = datetime.now(timezone.utc) - datetime.fromisoformat(created)
+                delta = datetime.now(UTC) - datetime.fromisoformat(created)
                 age = f"{delta.days}d" if delta.days else f"{delta.seconds // 3600}h"
             except Exception:
                 pass
-        results.append({
-            "name": ws.get("name"),
-            "description": ws.get("description"),
-            "branch": ws.get("branch"),
-            "repo": ws.get("repo_path"),
-            "pr_url": ws.get("pr_url"),
-            "age": age,
-            "status": ws.get("status"),
-        })
+        results.append(
+            {
+                "name": ws.get("name"),
+                "description": ws.get("description"),
+                "branch": ws.get("branch"),
+                "repo": ws.get("repo_path"),
+                "pr_url": ws.get("pr_url"),
+                "age": age,
+                "status": ws.get("status"),
+            }
+        )
     return results
 
 
@@ -249,6 +252,7 @@ def check_prs() -> dict:
 
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def add_note(workspace_name: str, note: str) -> dict:

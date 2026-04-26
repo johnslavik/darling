@@ -4,7 +4,6 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 CONFIG_PATH = Path("~/.config/darling/config.toml").expanduser()
 
 

@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from darling.config import Config, load_config
 
 
@@ -14,7 +10,7 @@ def test_default_config_paths_expand():
 
 
 def test_config_creates_directories(tmp_path):
-    cfg = Config(
+    Config(
         worktrees_dir=tmp_path / "worktrees",
         data_dir=tmp_path / "data",
     )
@@ -29,7 +25,7 @@ def test_load_config_returns_defaults_when_no_file(monkeypatch, tmp_path):
     # Override dirs to avoid touching the real filesystem
     monkeypatch.setattr(
         "darling.config.Config.__post_init__",
-        lambda self: None,
+        lambda _: None,
     )
     cfg = load_config()
     assert cfg.anthropic_model == "claude-opus-4-5"
@@ -43,7 +39,7 @@ def test_load_config_reads_toml(tmp_path, monkeypatch):
         'anthropic_model = "claude-haiku-4-5-20251001"\n'
     )
     monkeypatch.setattr("darling.config.CONFIG_PATH", config_file)
-    monkeypatch.setattr("darling.config.Config.__post_init__", lambda self: None)
+    monkeypatch.setattr("darling.config.Config.__post_init__", lambda _: None)
     cfg = load_config()
     assert str(cfg.worktrees_dir) == "/tmp/my-worktrees"
     assert cfg.anthropic_model == "claude-haiku-4-5-20251001"

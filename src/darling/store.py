@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCHEMA_VERSION = "1.0"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read(path: Path) -> dict:
@@ -32,6 +33,7 @@ def _append_note(existing: str, new: str) -> str:
 
 # ── Workspaces ──────────────────────────────────────────────────────────────
 
+
 def workspace_path(data_dir: Path, name: str) -> Path:
     return data_dir / "workspaces" / f"{name}.json"
 
@@ -46,10 +48,8 @@ def write_workspace(data_dir: Path, ws: dict) -> None:
 
 
 def delete_workspace_file(data_dir: Path, name: str) -> None:
-    try:
+    with contextlib.suppress(FileNotFoundError):
         workspace_path(data_dir, name).unlink()
-    except FileNotFoundError:
-        pass
 
 
 def list_workspaces(data_dir: Path) -> list[dict]:
@@ -84,7 +84,9 @@ def new_workspace(
 def find_workspace(data_dir: Path, query: str) -> dict | None:
     query_lower = query.lower()
     for ws in list_workspaces(data_dir):
-        if query_lower in ws.get("name", "").lower() or query_lower in ws.get("description", "").lower():
+        name_match = query_lower in ws.get("name", "").lower()
+        desc_match = query_lower in ws.get("description", "").lower()
+        if name_match or desc_match:
             return ws
     return None
 
@@ -100,9 +102,10 @@ def add_workspace_note(data_dir: Path, workspace_name: str, note: str) -> bool:
 
 # ── Knowledge base ───────────────────────────────────────────────────────────
 
+
 def write_kb_entry(data_dir: Path, entry: dict) -> Path:
     entry["schema_version"] = SCHEMA_VERSION
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = data_dir / "knowledge_base" / f"{entry['name']}-{ts}.json"
     _write(path, entry)
     return path
@@ -128,7 +131,9 @@ def update_kb_notes(data_dir: Path, workspace_name: str, note: str) -> bool:
     return True
 
 
-def new_kb_entry(ws: dict, scrollback_raw: str, scrollback_summary: str, pr_outcome: str | None) -> dict:
+def new_kb_entry(
+    ws: dict, scrollback_raw: str, scrollback_summary: str, pr_outcome: str | None
+) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "name": ws.get("name"),
@@ -146,6 +151,7 @@ def new_kb_entry(ws: dict, scrollback_raw: str, scrollback_summary: str, pr_outc
 
 
 # ── Queue ────────────────────────────────────────────────────────────────────
+
 
 def _queue_path(data_dir: Path) -> Path:
     return data_dir / "queue.json"
@@ -173,17 +179,19 @@ def enqueue(
 ) -> str:
     queue = _load_queue(data_dir)
     item_id = str(uuid.uuid4())[:8]
-    queue["items"].append({
-        "id": item_id,
-        "task_prompt": task_prompt,
-        "workspace_name": workspace_name,
-        "repo_paths": repo_paths or [],
-        "reason": reason,
-        "queued_at": _now(),
-        "processed_at": None,
-        "outcome": None,
-        "status": "pending",
-    })
+    queue["items"].append(
+        {
+            "id": item_id,
+            "task_prompt": task_prompt,
+            "workspace_name": workspace_name,
+            "repo_paths": repo_paths or [],
+            "reason": reason,
+            "queued_at": _now(),
+            "processed_at": None,
+            "outcome": None,
+            "status": "pending",
+        }
+    )
     _save_queue(data_dir, queue)
     return item_id
 

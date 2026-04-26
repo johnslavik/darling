@@ -18,6 +18,7 @@ def data_dir(tmp_path: Path) -> Path:
 
 # ── Schema version ────────────────────────────────────────────────────────────
 
+
 def test_workspace_has_schema_version(data_dir):
     ws = store.new_workspace(
         name="test-ws",
@@ -34,8 +35,12 @@ def test_workspace_has_schema_version(data_dir):
 
 def test_kb_entry_has_schema_version(data_dir):
     ws = store.new_workspace(
-        name="done-ws", description="Done", repo_path="/tmp/r",
-        branch="b", worktree_path="/tmp/w", zmx_session="done-ws",
+        name="done-ws",
+        description="Done",
+        repo_path="/tmp/r",
+        branch="b",
+        worktree_path="/tmp/w",
+        zmx_session="done-ws",
     )
     entry = store.new_kb_entry(ws, "raw scrollback", "summary", "merged")
     path = store.write_kb_entry(data_dir, entry)
@@ -50,6 +55,7 @@ def test_queue_has_schema_version(data_dir):
 
 
 # ── Workspace CRUD ────────────────────────────────────────────────────────────
+
 
 def test_write_and_read_workspace(data_dir):
     ws = store.new_workspace(
@@ -70,8 +76,12 @@ def test_write_and_read_workspace(data_dir):
 def test_list_workspaces_returns_all(data_dir):
     for name in ("ws-a", "ws-b", "ws-c"):
         ws = store.new_workspace(
-            name=name, description=name, repo_path="/r",
-            branch=name, worktree_path=f"/w/{name}", zmx_session=name,
+            name=name,
+            description=name,
+            repo_path="/r",
+            branch=name,
+            worktree_path=f"/w/{name}",
+            zmx_session=name,
         )
         store.write_workspace(data_dir, ws)
     results = store.list_workspaces(data_dir)
@@ -81,8 +91,12 @@ def test_list_workspaces_returns_all(data_dir):
 
 def test_delete_workspace_file(data_dir):
     ws = store.new_workspace(
-        name="to-delete", description="d", repo_path="/r",
-        branch="b", worktree_path="/w", zmx_session="to-delete",
+        name="to-delete",
+        description="d",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="to-delete",
     )
     store.write_workspace(data_dir, ws)
     assert store.read_workspace(data_dir, "to-delete") is not None
@@ -92,8 +106,12 @@ def test_delete_workspace_file(data_dir):
 
 def test_find_workspace_by_partial_name(data_dir):
     ws = store.new_workspace(
-        name="fix-auth-token-expiry", description="Fix JWT expiry",
-        repo_path="/r", branch="b", worktree_path="/w", zmx_session="fix-auth-token-expiry",
+        name="fix-auth-token-expiry",
+        description="Fix JWT expiry",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="fix-auth-token-expiry",
     )
     store.write_workspace(data_dir, ws)
     found = store.find_workspace(data_dir, "auth")
@@ -103,8 +121,12 @@ def test_find_workspace_by_partial_name(data_dir):
 
 def test_find_workspace_by_description(data_dir):
     ws = store.new_workspace(
-        name="some-slug", description="Refactor the billing pipeline",
-        repo_path="/r", branch="b", worktree_path="/w", zmx_session="some-slug",
+        name="some-slug",
+        description="Refactor the billing pipeline",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="some-slug",
     )
     store.write_workspace(data_dir, ws)
     found = store.find_workspace(data_dir, "billing")
@@ -122,8 +144,12 @@ def test_read_workspace_returns_none_for_missing(data_dir):
 def test_old_workspace_missing_field_gets_default(data_dir):
     # Simulate a v1.0 file missing a future field — reads should not raise
     ws = store.new_workspace(
-        name="old-ws", description="old", repo_path="/r",
-        branch="b", worktree_path="/w", zmx_session="old-ws",
+        name="old-ws",
+        description="old",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="old-ws",
     )
     store.write_workspace(data_dir, ws)
     # Remove a field to simulate an older schema
@@ -137,11 +163,16 @@ def test_old_workspace_missing_field_gets_default(data_dir):
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
 
+
 def test_write_and_list_kb_entries(data_dir):
     for i in range(3):
         ws = store.new_workspace(
-            name=f"ws-{i}", description=f"workspace {i}", repo_path="/r",
-            branch=f"b-{i}", worktree_path=f"/w/{i}", zmx_session=f"ws-{i}",
+            name=f"ws-{i}",
+            description=f"workspace {i}",
+            repo_path="/r",
+            branch=f"b-{i}",
+            worktree_path=f"/w/{i}",
+            zmx_session=f"ws-{i}",
         )
         entry = store.new_kb_entry(ws, f"scrollback {i}", f"summary {i}", "merged")
         store.write_kb_entry(data_dir, entry)
@@ -151,8 +182,12 @@ def test_write_and_list_kb_entries(data_dir):
 
 def test_kb_entry_preserves_outcome(data_dir):
     ws = store.new_workspace(
-        name="closed-ws", description="d", repo_path="/r",
-        branch="b", worktree_path="/w", zmx_session="closed-ws",
+        name="closed-ws",
+        description="d",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="closed-ws",
     )
     entry = store.new_kb_entry(ws, "raw", "summary", "closed")
     store.write_kb_entry(data_dir, entry)
@@ -162,8 +197,12 @@ def test_kb_entry_preserves_outcome(data_dir):
 
 def test_add_note_to_kb_entry(data_dir):
     ws = store.new_workspace(
-        name="noted-ws", description="d", repo_path="/r",
-        branch="b", worktree_path="/w", zmx_session="noted-ws",
+        name="noted-ws",
+        description="d",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="noted-ws",
     )
     entry = store.new_kb_entry(ws, "raw", "summary", "merged")
     store.write_kb_entry(data_dir, entry)
@@ -178,8 +217,12 @@ def test_update_kb_notes_returns_false_when_not_found(data_dir):
 
 def test_add_workspace_note(data_dir):
     ws = store.new_workspace(
-        name="active-ws", description="d", repo_path="/r",
-        branch="b", worktree_path="/w", zmx_session="active-ws",
+        name="active-ws",
+        description="d",
+        repo_path="/r",
+        branch="b",
+        worktree_path="/w",
+        zmx_session="active-ws",
     )
     store.write_workspace(data_dir, ws)
     result = store.add_workspace_note(data_dir, "active-ws", "learned something useful")
@@ -194,8 +237,11 @@ def test_add_workspace_note_returns_false_when_not_found(data_dir):
 
 # ── Queue ─────────────────────────────────────────────────────────────────────
 
+
 def test_enqueue_and_list(data_dir):
-    store.enqueue(data_dir, task_prompt="clean up workspace X", workspace_name="ws-x", reason="pr_merged")
+    store.enqueue(
+        data_dir, task_prompt="clean up workspace X", workspace_name="ws-x", reason="pr_merged"
+    )
     store.enqueue(data_dir, task_prompt="bump dependencies in repo Y", repo_paths=["/repo/y"])
     items = store.list_queue(data_dir)
     assert len(items) == 2
