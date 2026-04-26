@@ -4,6 +4,35 @@ The user invoked `/darling` with these arguments: $ARGUMENTS
 
 ---
 
+## Pipeline self-healing
+
+The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `~/.claude/commands/darling.md` before reporting back**. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
+
+When you patch the skill, finish the user's request first if you can, then surface a one-line note about what you changed.
+
+---
+
+## zmx session sanity check
+
+After every `zmx run` launch, verify the session is alive AND running the intended command. zmx silently accepts launches that exit immediately, so a "session created" message is not proof of success.
+
+Run this immediately after `zmx run`:
+
+```bash
+sleep 2
+zmx list --short | grep -qx "<workspace_name>" || echo "MISSING: session not in zmx list"
+zmx history <workspace_name> 2>&1 | tail -20
+```
+
+The history tail must show evidence the intended command is running:
+
+- For Claude launches: a Claude prompt box, "Working…", a tool call line, or the literal prompt text echoed.
+- For raw shell commands: the expected stdout/banner.
+
+If the tail shows a bare shell prompt, "Process exited", "command not found", or is empty after 2s, the launch failed. Surface the history to the user, kill the session with `zmx kill <workspace_name> --force`, fix the root cause (PATH, missing flag, bad quoting), patch this skill per **Pipeline self-healing** above, and retry once. Do not silently leave a dead session in the workspace record.
+
+---
+
 ## State
 
 All state lives in `~/.local/share/darling/`. Read and write it directly with the Bash tool using the Python snippets below — never construct JSON by hand.
@@ -259,6 +288,7 @@ Match `$ARGUMENTS` to the first rule that applies:
 | `register <alias> <path>` | **register-repo** |
 | `unregister <alias>` | **unregister-repo** |
 | bare number, `gh-NNNNNN`, or `https://github.com/.../issues/NNNNNN` | **workspace-for-issue** |
+| free-text task description ("work on X", "fix Y", a symbol/phrase) | **resolve-task-description** |
 | anything else | ask the user what they meant |
 
 ---
@@ -303,11 +333,21 @@ Parse `alias` from `$ARGUMENTS`. Run the **Remove repo** snippet.
 
 ### check-prs
 
-1. Run **Read all workspaces**. For each with a non-null `pr_url`:
-2. Parse owner/repo/number from the URL.
-3. Run `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt`.
-4. If merged or closed: run **Append item to queue** with a prompt like:
-   > "Workspace '<name>' PR was <merged|closed>. Delete the workspace: kill ZMX session '<zmx_session>', remove git worktree at '<worktree_path>', archive to knowledge base, delete branch '<branch>'."
+Run **Read all workspaces**. For each workspace, check both the PR (if any) and the underlying issue. If either is terminal, the workspace must be cleaned up — closed work has no in-flight workspace.
+
+1. **PR check** — for each workspace with a non-null `pr_url`:
+   - Parse owner/repo/number from the URL.
+   - Run `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt`.
+   - If `state` is `MERGED` or `CLOSED`: queue cleanup (see below).
+2. **Issue check** — for each workspace, derive the issue number from `branch` (`gh-NNNNNN-...`) and the repo from `repo_path`'s `origin` remote:
+   - Run `gh issue view <number> --repo <owner>/<repo> --json state,closedAt`.
+   - If `state` is `CLOSED` AND the workspace has no open PR linked: queue cleanup.
+
+Cleanup queue prompt:
+
+> "Workspace '<name>' is terminal (<reason: PR merged|PR closed|issue closed>). Delete the workspace: kill ZMX session '<zmx_session>', remove git worktree at '<worktree_path>', archive to knowledge base, delete branch '<branch>'."
+
+Skip workspaces whose issue is closed but whose PR is still open — that PR may still need follow-up.
 
 ---
 
@@ -317,6 +357,88 @@ Parse `alias` from `$ARGUMENTS`. Run the **Remove repo** snippet.
 2. If none: say "Queue is empty."
 3. Print the task prompt and execute it using available tools.
 4. On completion: run **Mark queue item done** with the item's id and a brief outcome.
+
+---
+
+### resolve-task-description
+
+User passed free text like `work on revamping sys.lazy_modules`, `fix the lazy modules thing`, `Counter dict typo`. Resolve it to a concrete issue **without asking the user** unless genuinely ambiguous. Search in this order — stop at the first source that yields a confident match:
+
+1. **Active workspaces** — read `~/.local/share/darling/workspaces/*.json`, score against `description`, `branch`, `name`, `notes`.
+2. **Knowledge base** — read `~/.local/share/darling/knowledge_base/*.json` for archived workspaces (recent finished work often comes back).
+3. **GitHub issues in current repo** — `gh issue list --search "<terms>" --state all --limit 10 --json number,title,state,updatedAt,url`. Use `gh search issues` if the repo isn't determined yet.
+4. **Codebase grep** — only as a tiebreaker, not a primary source. `grep -rn` the distinguishing tokens to confirm a candidate's relevance.
+
+Run this resolver script — it returns ranked candidates as JSON:
+
+```python
+python3 - << 'EOF'
+import json, pathlib, re, subprocess, sys
+
+query = "<free_text>"
+terms = [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_.]+", query) if t.lower() not in {"work","on","the","a","an","fix","do","please","revamp","revamping","update","add","change","make","for","with","to","of"}]
+
+def score(text, terms):
+    text_l = (text or "").lower()
+    return sum(1 for t in terms if t.lower() in text_l)
+
+candidates = []
+
+# Active workspaces
+for f in pathlib.Path("~/.local/share/darling/workspaces/").expanduser().glob("*.json"):
+    w = json.loads(f.read_text())
+    s = score(w.get("description","") + " " + w.get("branch","") + " " + w.get("notes",""), terms)
+    if s: candidates.append({"source":"workspace","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"pr_url":w.get("pr_url"),"created_at":w.get("created_at")})
+
+# Knowledge base
+kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
+if kb.exists():
+    for f in kb.glob("*.json"):
+        w = json.loads(f.read_text())
+        s = score(w.get("description","") + " " + w.get("branch",""), terms)
+        if s: candidates.append({"source":"knowledge_base","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"archived_at":w.get("archived_at")})
+
+# GitHub issues (current repo)
+r = subprocess.run(["git","rev-parse","--show-toplevel"], capture_output=True, text=True)
+if r.returncode == 0:
+    r2 = subprocess.run(["git","-C",r.stdout.strip(),"remote","get-url","origin"], capture_output=True, text=True)
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", r2.stdout.strip())
+    if m:
+        owner_repo = f"{m.group(1)}/{m.group(2)}"
+        search_query = " ".join(terms)
+        r3 = subprocess.run(["gh","issue","list","--repo",owner_repo,"--search",search_query,"--state","all","--limit","10","--json","number,title,state,updatedAt,url"], capture_output=True, text=True)
+        if r3.returncode == 0:
+            for issue in json.loads(r3.stdout):
+                s = score(issue["title"], terms)
+                if s and issue["state"].upper() == "OPEN":
+                    candidates.append({"source":"github","score":s,"number":issue["number"],"title":issue["title"],"state":issue["state"],"updated":issue["updatedAt"],"url":issue["url"]})
+
+candidates.sort(key=lambda c: (-c["score"], c.get("source")))
+print(json.dumps({"query":query,"terms":terms,"candidates":candidates[:10]}, indent=2))
+EOF
+```
+
+Before deciding, **prune terminal workspaces**: for each workspace/knowledge_base candidate, run `gh issue view <num> --repo <owner>/<repo> --json state` once. If `CLOSED` (and no open linked PR), drop the candidate and queue cleanup using the **check-prs** prompt — closed work shouldn't surface as a resumable option.
+
+Decide based on the candidate list:
+
+- **Zero candidates** — tell the user nothing matched and ask for an issue number / URL. Show the search terms used so they can correct them.
+- **One candidate, high confidence** (top score ≥ 2 AND no other candidate within 1 point of it, OR the candidate is an active workspace) — proceed without asking. If it's an active workspace, route to **workspace-for-issue** with that issue number. If it's a github issue, do the same. Tell the user which candidate you picked and why in one line.
+- **Multiple candidates or low confidence** — present them and ask the user to pick. Format:
+
+  > Found N candidates for `<query>`. Pick one or give an issue number:
+  >
+  > 1. **#148587** — Revamp `sys.lazy_modules` (open, github, score 3)
+  >    https://github.com/python/cpython/issues/148587
+  > 2. **#145057** — PEP 810: lazy imports tracking issue (open, github, score 2)
+  >    https://github.com/python/cpython/issues/145057
+  > 3. **#142800** — `sys.lazy_modules` repr is misleading (closed, github, score 2)
+
+  Before listing, **deduplicate**: if an active/archived workspace and a github issue refer to the same issue number, merge them into one entry showing both facets (e.g. `#148587 — Revamp sys.lazy_modules (open) — active workspace gh-148587-revamp-sys-lazy-modules`). Never show the same issue twice.
+
+  For workspace candidates, include branch + age + PR status. For github candidates, include number, title, state, last updated. For knowledge_base candidates, mark as `(archived)`.
+
+After the user confirms, route to **workspace-for-issue** with the chosen issue number.
 
 ---
 
@@ -435,7 +557,13 @@ Compose a self-contained prompt (the receiving Claude has no memory of this conv
 2. Issue body verbatim
 3. Workspace context: repo path, branch, worktree path
 4. Extra instructions verbatim (high priority — place last)
-5. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+5. **Ship-it block** — paste verbatim:
+   > "**Shipping is part of the job.** When you reach a meaningful checkpoint (compiles, tests pass, or the requested change is done), commit and push the topic branch — do not end the session with unpushed work. Follow the project's contribution workflow as documented in its CLAUDE.md / CLAUDE.local.md / CONTRIBUTING for the exact remote and commit style. Never force-push a published branch.
+   >
+   > **Do NOT open or create pull requests.** Never run `gh pr create` or any equivalent. If a PR already exists for this branch, pushing updates it — that's fine. If no PR exists, leave it that way; the user will open the PR themselves. Only open a PR if the user has explicitly asked you to in this session's instructions.
+   >
+   > End by reporting the commit SHA and (if a PR already existed) the PR URL."
+6. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
 
 Write to temp file and launch entirely in the background — never call `zmx attach` (interactive, leaks to caller's terminal):
 
@@ -449,12 +577,16 @@ zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "
 
 `zmx run` creates the session if it does not exist. The `-d` flag detaches it completely — no terminal leakage.
 
+**Now run the zmx session sanity check** (see top of file) to confirm the session is alive AND Claude is actually running. Do not skip this. Only proceed to opening the Ghostty window if the check passes.
+
 #### Open a Ghostty window attached to the session
 
-After delegation, open a new Ghostty window attached to the session so the user can watch:
+After delegation, open a new Ghostty window attached to the session so the user can watch.
+
+Ghostty's `-e` runs the command without a login shell, so `$PATH` is bare and `zmx` is not found — the window flashes "Process exited". Wrap in a login shell so `~/.zshrc`/`~/.bash_profile` populate `PATH`:
 
 ```bash
-open -na Ghostty.app --args -e "zmx attach <workspace_name>"
+open -na Ghostty.app --args -e "/bin/bash -lc 'zmx attach <workspace_name>'"
 ```
 
 Tell the user:
