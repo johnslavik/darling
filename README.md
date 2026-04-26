@@ -22,17 +22,20 @@ Then add the following to `~/.claude/CLAUDE.md` (create the file if it doesn't e
 
 Darling is a workspace manager for development tasks. Its skill is installed at `~/.claude/commands/darling.md`.
 
-Invoke the darling skill whenever the user's intent is to **start, resume, or manage work on a specific GitHub issue or development task** — regardless of whether they use the word "darling" or the `/darling` command. Examples that should trigger it:
+Invoke the darling skill whenever the user's intent is to **start, resume, manage, or take inventory of in-flight development work** — regardless of whether they use the word "darling" or the `/darling` command. Darling owns the source of truth for active workspaces, queued tasks, and registered repos; questions about that state must go through it, not through ad-hoc `git worktree`/`gh` snooping.
 
-- "work on gh-142372"
-- "let's fix that cpython issue"
-- "open a workspace for the devguide ticket"
-- "darling, 142372"
-- any message where the user clearly wants to begin or check in on a concrete piece of work tied to a repo or issue
+Examples that should trigger it:
 
-When invoked this way, treat the issue reference (number, URL, or description) as `$ARGUMENTS` and follow the skill instructions exactly as if the user had typed `/darling <ref>`.
+- "work on gh-142372" → `/darling 142372`
+- "let's fix that cpython issue" → `/darling <free-text>`
+- "open a workspace for the devguide ticket" → `/darling <ref>`
+- "darling, 142372" → `/darling 142372`
+- **Status / inventory questions about current work** — e.g. "what are we working on", "what's the status", "list my workspaces", "what's in flight", "what's pending", "anything queued" → `/darling` (empty args = status) or `/darling list` / `/darling queue`
+- any message where the user wants to begin, resume, or check in on concrete work tied to a repo or issue
 
-Do **not** trigger darling for general questions about an issue ("what does gh-142372 say?"), code review, or anything where the user isn't starting/managing hands-on work.
+When invoked this way, treat the issue reference (number, URL, or free-text description) as `$ARGUMENTS` and follow the skill instructions exactly as if the user had typed `/darling <ref>`. For status questions, pass empty `$ARGUMENTS` and follow the **status** operation.
+
+Do **not** trigger darling for general questions about an issue ("what does gh-142372 say?"), code review of someone else's PR, or pure how-does-X-work questions where the user isn't asking about their own in-flight work.
 ```
 
 ## Requirements
@@ -64,7 +67,24 @@ Or explicitly with the slash command:
 /darling register cpython ~/Python/cpython
 /darling check                    poll GitHub PRs → enqueue cleanup
 /darling next                     run next queued task
+/darling next <ws> <text...>      set the "next step" note on a workspace
+/darling progress <ws> <text...>  append a dated bullet to the running log
+/darling tried <ws> <text...>     append a "tried X, got Y" entry
+/darling blocker <ws> <text>      set current blocker (`none` to clear)
 ```
+
+## Workspace state — narrative fields
+
+Each workspace record carries four narrative fields that together act as its working memory. They are what makes resuming a stale workspace cheap:
+
+| Field | Shape | Purpose |
+|---|---|---|
+| `next_step` | string | Single sentence: the immediate next action on resume. Always set. |
+| `progress` | string (multi-line) | Running log of what's been done, append-only. |
+| `tried` | list of strings | Approaches attempted and their outcomes — failed attempts go here so you don't redo them. |
+| `blockers` | string or null | What's currently stopping forward motion (review, decision, dependency). |
+
+The `status` operation surfaces them first. They're meant to be refreshed continuously — every meaningful action in or about a workspace should end with updating whichever fields changed (and `updated_at`). Stale fields defeat the whole point. Use the `/darling next|progress|tried|blocker` verbs to update them explicitly, or rely on Claude to refresh them as the conversation moves.
 
 ## Repo resolution
 

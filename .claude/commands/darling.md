@@ -59,10 +59,26 @@ All state lives in `~/.local/share/darling/`. Read and write it directly with th
   "pr_number": null,
   "pr_repo": null,
   "created_at": "<ISO 8601 UTC>",
+  "updated_at": "<ISO 8601 UTC>",
   "status": "active",
-  "notes": ""
+  "notes": "",
+  "next_step": "<one-line description of the immediate next action — e.g. 'address review comment about thread safety on PR #142400', 'rebase onto main and push', 'wait for CI on push abc123'>",
+  "progress": "<free-form running summary of what's been done so far — append, don't replace>",
+  "tried": [
+    "<short note: approach attempted + outcome — e.g. 'tried reusing PyDict_GetItem; failed because of borrowed-ref lifetime issues'>"
+  ],
+  "blockers": "<current blocker, or null — e.g. 'waiting on @gpshead review', 'PEP 810 decision pending'>"
 }
 ```
+
+The four narrative fields (`next_step`, `progress`, `tried`, `blockers`) collectively act as the workspace's working memory. They are what makes resuming a stale workspace cheap. Treat them as living text, not metadata to fill once and forget.
+
+- **`next_step`** — single sentence, the immediate next action. Always set. Refresh aggressively.
+- **`progress`** — free-form running summary; append new bullets/sentences as work advances. Reads like a short project log.
+- **`tried`** — list of one-liners, each: approach + outcome. Failed attempts go here so we don't redo them. Successful attempts can graduate into `progress`.
+- **`blockers`** — what's currently stopping forward motion (review, decision, dependency, environmental). `null` when unblocked.
+
+When unknown (just created, no plan yet), set `next_step` to something concrete like `"read the issue and decide on an approach"`; leave `progress`/`tried`/`blockers` empty/null until there's something real to record.
 
 ### repos.json shape
 
@@ -121,7 +137,8 @@ EOF
 
 ```python
 python3 - << 'EOF'
-import json, pathlib
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
 record = {
     "name": "<workspace_name>",
     "description": "#<issue_number>: <issue_title>",
@@ -132,13 +149,78 @@ record = {
     "pr_url": None,
     "pr_number": None,
     "pr_repo": None,
-    "created_at": "<iso_utc_now>",
+    "created_at": now,
+    "updated_at": now,
     "status": "active",
-    "notes": ""
+    "notes": "",
+    "next_step": "<one-line next action — required>",
+    "progress": "",
+    "tried": [],
+    "blockers": None
 }
 p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
 p.write_text(json.dumps(record, indent=2))
 print("written:", p)
+EOF
+```
+
+### Update workspace fields (e.g. `next_step`, `progress`, `tried`, `blockers`, `pr_url`)
+
+Use this whenever the conversation reveals new state worth persisting. Always touches `updated_at`.
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+updates = {
+    # set only the fields that changed; e.g.
+    # "next_step": "rebase onto main and re-push after #148999 merges",
+    # "blockers": "waiting on @gpshead review of PR #148530",
+    # "pr_url": "https://github.com/python/cpython/pull/148530",
+    # "pr_number": 148530,
+    # "pr_repo": "python/cpython",
+}
+record.update(updates)
+record["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(record, indent=2))
+print("updated:", list(updates))
+EOF
+```
+
+### Append to `progress` (running log)
+
+Don't overwrite `progress` — append. Use this to add a dated bullet.
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
+date = now[:10]
+entry = "<short bullet — what just got done or learned>"
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+prior = record.get("progress") or ""
+record["progress"] = (prior + ("\n" if prior else "") + f"- {date}: {entry}").strip()
+record["updated_at"] = now
+p.write_text(json.dumps(record, indent=2))
+print("appended progress")
+EOF
+```
+
+### Append to `tried` (failed/attempted approaches)
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
+entry = "<short: approach + outcome, e.g. 'monkey-patched _Py_Dealloc; SIGSEGV under free-threaded build'>"
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+record.setdefault("tried", []).append(entry)
+record["updated_at"] = now
+p.write_text(json.dumps(record, indent=2))
+print("appended tried")
 EOF
 ```
 
@@ -285,6 +367,10 @@ Match `$ARGUMENTS` to the first rule that applies:
 | `queue` | **list-queue** |
 | `repos` | **list-repos** |
 | `next` | **run-next-task** |
+| `next <workspace_or_issue> <text...>` | **set-next-step** |
+| `progress <workspace_or_issue> <text...>` | **append-progress** |
+| `tried <workspace_or_issue> <text...>` | **append-tried** |
+| `blocker <workspace_or_issue> <text or "none">` | **set-blocker** |
 | `register <alias> <path>` | **register-repo** |
 | `unregister <alias>` | **unregister-repo** |
 | bare number, `gh-NNNNNN`, or `https://github.com/.../issues/NNNNNN` | **workspace-for-issue** |
@@ -297,13 +383,27 @@ Match `$ARGUMENTS` to the first rule that applies:
 
 ### status
 
-Run the **Read all workspaces** snippet and the **Read queue (pending items only)** snippet. Summarise: list active workspaces with name, branch, age; count pending queue items.
+Run the **Read all workspaces** snippet and the **Read queue (pending items only)** snippet. Summarise as a compact list, one block per active workspace:
+
+```
+<name>  (#<issue> · <branch> · <age>)
+  next:    <next_step>
+  blocker: <blockers>            # only if non-null
+  tried:   <count> approaches    # only if tried is non-empty; on `/darling list` show last 1-2
+  pr:      <pr_url or "—">
+```
+
+Sort by `updated_at` desc (most recently touched first), falling back to `created_at`. Then a one-line tail: `Queue: N pending`.
+
+If `next_step` is missing or stale-looking (placeholder text from creation), flag it in the output (`next: ?? (set with /darling next ...)`) so the user knows to refresh it. Same for an empty `progress` on a workspace older than a few days.
+
+This is the **default response when the user asks "what are we working on" / "status" / similar inventory questions** — do not fall back to `git worktree list` or `gh issue` for these; the workspace records are the source of truth.
 
 ---
 
 ### list-workspaces
 
-Run the **Read all workspaces** snippet. Print a table: name, branch, repo, age, pr_url.
+Run the **Read all workspaces** snippet. Print a table: name, branch, repo, age, pr_url, next_step.
 
 ---
 
@@ -351,6 +451,32 @@ Skip workspaces whose issue is closed but whose PR is still open — that PR may
 
 ---
 
+### set-next-step
+
+Parse `$ARGUMENTS` as `<workspace_or_issue> <text...>`. Resolve `<workspace_or_issue>` to a workspace record (by exact `name`, or by issue number → `gh-NNNNNN-...` prefix match on `branch`). Run **Update workspace fields** with `next_step` set to the text. Print one-line confirmation.
+
+If no workspace matches, list nearby candidates instead of guessing.
+
+---
+
+### append-progress
+
+Parse `$ARGUMENTS` as `<workspace_or_issue> <text...>`. Resolve to workspace as in **set-next-step**. Run **Append to `progress`** with the text. Print one-line confirmation.
+
+---
+
+### append-tried
+
+Parse `$ARGUMENTS` as `<workspace_or_issue> <text...>`. Resolve to workspace as in **set-next-step**. Run **Append to `tried`** with the text. Print one-line confirmation.
+
+---
+
+### set-blocker
+
+Parse `$ARGUMENTS` as `<workspace_or_issue> <text or "none">`. Resolve to workspace as in **set-next-step**. Run **Update workspace fields** with `blockers` = text (or `null` if the text is exactly `none`). Print one-line confirmation.
+
+---
+
 ### run-next-task
 
 1. Run **Read queue (pending items only)**. Take the first item.
@@ -362,12 +488,22 @@ Skip workspaces whose issue is closed but whose PR is still open — that PR may
 
 ### resolve-task-description
 
-User passed free text like `work on revamping sys.lazy_modules`, `fix the lazy modules thing`, `Counter dict typo`. Resolve it to a concrete issue **without asking the user** unless genuinely ambiguous. Search in this order — stop at the first source that yields a confident match:
+User passed free text like `work on revamping sys.lazy_modules`, `fix the lazy modules thing`, `Counter dict typo`. Resolve it to a concrete issue **without asking the user** unless genuinely ambiguous — and **never demand they paste an issue number** when the keywords are enough to identify it.
 
-1. **Active workspaces** — read `~/.local/share/darling/workspaces/*.json`, score against `description`, `branch`, `name`, `notes`.
+The user is not a casual visitor on these issues; almost any task they describe is going to be one they authored, are assigned to, are mentioned in, or have commented on. Bias the search heavily toward issues that involve them. Only fall back to broader repo search when the involvement-scoped search comes up empty.
+
+Search in this order — stop at the first source that yields a confident match:
+
+1. **Active workspaces** — read `~/.local/share/darling/workspaces/*.json`, score against `description`, `branch`, `name`, `notes`, `progress`.
 2. **Knowledge base** — read `~/.local/share/darling/knowledge_base/*.json` for archived workspaces (recent finished work often comes back).
-3. **GitHub issues in current repo** — `gh issue list --search "<terms>" --state all --limit 10 --json number,title,state,updatedAt,url`. Use `gh search issues` if the repo isn't determined yet.
-4. **Codebase grep** — only as a tiebreaker, not a primary source. `grep -rn` the distinguishing tokens to confirm a candidate's relevance.
+3. **GitHub issues involving the user** — query each of these and merge:
+   - `gh issue list --repo <owner>/<repo> --assignee @me --state all --search "<terms>" --limit 20 --json number,title,state,updatedAt,url,author`
+   - `gh issue list --repo <owner>/<repo> --author @me --state all --search "<terms>" --limit 20 --json number,title,state,updatedAt,url,author`
+   - `gh issue list --repo <owner>/<repo> --mentions @me --state all --search "<terms>" --limit 20 --json number,title,state,updatedAt,url,author`
+   - `gh search issues --repo <owner>/<repo> --commenter=@me --state all "<terms>" --limit 20 --json number,title,state,updatedAt,url,author,repository` (covers issues the user discussed but didn't author/own)
+   Apply a strong score boost to anything that matches one of these (they are by definition "issues that involve me"). Tag the candidate's source as `github-mine` so the ranking step can prefer it over generic hits.
+4. **GitHub issues in the repo (broader)** — only run if step 3 returned no plausible match: `gh issue list --repo <owner>/<repo> --search "<terms>" --state all --limit 10 --json number,title,state,updatedAt,url`. Use `gh search issues` if the repo isn't determined yet.
+5. **Codebase grep** — only as a tiebreaker, not a primary source. `grep -rn` the distinguishing tokens to confirm a candidate's relevance.
 
 Run this resolver script — it returns ranked candidates as JSON:
 
@@ -383,12 +519,18 @@ def score(text, terms):
     return sum(1 for t in terms if t.lower() in text_l)
 
 candidates = []
+seen_issue_nums = set()
+
+def add(c):
+    candidates.append(c)
+    if "number" in c: seen_issue_nums.add(c["number"])
 
 # Active workspaces
 for f in pathlib.Path("~/.local/share/darling/workspaces/").expanduser().glob("*.json"):
     w = json.loads(f.read_text())
-    s = score(w.get("description","") + " " + w.get("branch","") + " " + w.get("notes",""), terms)
-    if s: candidates.append({"source":"workspace","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"pr_url":w.get("pr_url"),"created_at":w.get("created_at")})
+    haystack = " ".join(str(w.get(k, "") or "") for k in ("description","branch","notes","progress","next_step"))
+    s = score(haystack, terms)
+    if s: add({"source":"workspace","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"pr_url":w.get("pr_url"),"created_at":w.get("created_at"),"updated_at":w.get("updated_at")})
 
 # Knowledge base
 kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
@@ -396,25 +538,60 @@ if kb.exists():
     for f in kb.glob("*.json"):
         w = json.loads(f.read_text())
         s = score(w.get("description","") + " " + w.get("branch",""), terms)
-        if s: candidates.append({"source":"knowledge_base","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"archived_at":w.get("archived_at")})
+        if s: add({"source":"knowledge_base","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"archived_at":w.get("archived_at")})
 
-# GitHub issues (current repo)
+# Resolve repo
 r = subprocess.run(["git","rev-parse","--show-toplevel"], capture_output=True, text=True)
+owner_repo = None
 if r.returncode == 0:
     r2 = subprocess.run(["git","-C",r.stdout.strip(),"remote","get-url","origin"], capture_output=True, text=True)
     m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", r2.stdout.strip())
-    if m:
-        owner_repo = f"{m.group(1)}/{m.group(2)}"
-        search_query = " ".join(terms)
-        r3 = subprocess.run(["gh","issue","list","--repo",owner_repo,"--search",search_query,"--state","all","--limit","10","--json","number,title,state,updatedAt,url"], capture_output=True, text=True)
-        if r3.returncode == 0:
-            for issue in json.loads(r3.stdout):
-                s = score(issue["title"], terms)
-                if s and issue["state"].upper() == "OPEN":
-                    candidates.append({"source":"github","score":s,"number":issue["number"],"title":issue["title"],"state":issue["state"],"updated":issue["updatedAt"],"url":issue["url"]})
+    if m: owner_repo = f"{m.group(1)}/{m.group(2)}"
 
-candidates.sort(key=lambda c: (-c["score"], c.get("source")))
-print(json.dumps({"query":query,"terms":terms,"candidates":candidates[:10]}, indent=2))
+# GitHub issues involving the user — strong signal, big score boost
+MINE_BOOST = 3
+def fetch(args):
+    r = subprocess.run(args, capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip(): return []
+    try: return json.loads(r.stdout)
+    except json.JSONDecodeError: return []
+
+mine_results = []
+if owner_repo:
+    sq = " ".join(terms)
+    mine_results += fetch(["gh","issue","list","--repo",owner_repo,"--assignee","@me","--state","all","--search",sq,"--limit","20","--json","number,title,state,updatedAt,url,author"])
+    mine_results += fetch(["gh","issue","list","--repo",owner_repo,"--author","@me","--state","all","--search",sq,"--limit","20","--json","number,title,state,updatedAt,url,author"])
+    mine_results += fetch(["gh","issue","list","--repo",owner_repo,"--mentions","@me","--state","all","--search",sq,"--limit","20","--json","number,title,state,updatedAt,url,author"])
+    # commenter scoping requires `gh search issues`
+    mine_results += fetch(["gh","search","issues","--repo",owner_repo,"--commenter=@me","--state","all","--limit","20","--json","number,title,state,updatedAt,url,author,repository",sq])
+
+# Dedup by number, keep best score, mark involves_me
+seen_mine = {}
+for issue in mine_results:
+    num = issue.get("number")
+    if not num or num in seen_issue_nums: continue
+    s = score(issue.get("title",""), terms)
+    if not s: continue
+    boosted = s + MINE_BOOST
+    prev = seen_mine.get(num)
+    if not prev or prev["score"] < boosted:
+        seen_mine[num] = {"source":"github-mine","score":boosted,"raw_score":s,"number":num,"title":issue["title"],"state":issue["state"],"updated":issue["updatedAt"],"url":issue["url"],"involves_me":True}
+
+for c in seen_mine.values(): add(c)
+
+# Broader repo search — only if no "mine" hits
+if owner_repo and not seen_mine:
+    sq = " ".join(terms)
+    for issue in fetch(["gh","issue","list","--repo",owner_repo,"--search",sq,"--state","all","--limit","10","--json","number,title,state,updatedAt,url"]):
+        if issue["number"] in seen_issue_nums: continue
+        s = score(issue["title"], terms)
+        if s and issue["state"].upper() == "OPEN":
+            add({"source":"github","score":s,"number":issue["number"],"title":issue["title"],"state":issue["state"],"updated":issue["updatedAt"],"url":issue["url"],"involves_me":False})
+
+# Sort: score desc, then prefer workspace > github-mine > github > knowledge_base
+src_rank = {"workspace":0,"github-mine":1,"github":2,"knowledge_base":3}
+candidates.sort(key=lambda c: (-c["score"], src_rank.get(c.get("source"), 9)))
+print(json.dumps({"query":query,"terms":terms,"owner_repo":owner_repo,"candidates":candidates[:10]}, indent=2))
 EOF
 ```
 
@@ -422,9 +599,13 @@ Before deciding, **prune terminal workspaces**: for each workspace/knowledge_bas
 
 Decide based on the candidate list:
 
-- **Zero candidates** — tell the user nothing matched and ask for an issue number / URL. Show the search terms used so they can correct them.
-- **One candidate, high confidence** (top score ≥ 2 AND no other candidate within 1 point of it, OR the candidate is an active workspace) — proceed without asking. If it's an active workspace, route to **workspace-for-issue** with that issue number. If it's a github issue, do the same. Tell the user which candidate you picked and why in one line.
-- **Multiple candidates or low confidence** — present them and ask the user to pick. Format:
+- **Zero candidates** — tell the user nothing matched and show the search terms used so they can correct them. Only as a last resort ask for an issue number / URL — the user shouldn't have to look that up themselves when the keywords are descriptive.
+- **One candidate, high confidence** — proceed without asking. Triggers:
+  - the candidate is an active workspace, **or**
+  - the candidate is a `github-mine` hit (involves the user) and no other candidate is within 1 point of it, **or**
+  - top raw score ≥ 2 AND no other candidate within 1 point.
+  Route to **workspace-for-issue** with the issue number. Tell the user which candidate you picked and why in one line ("picked #148587 — your assigned issue, matches `lazy_modules`").
+- **Multiple candidates or low confidence** — present them and ask the user to pick. Mark `github-mine` candidates with `(yours)` so the user can spot them quickly. Format:
 
   > Found N candidates for `<query>`. Pick one or give an issue number:
   >
@@ -547,7 +728,16 @@ For **create**:
 git -C <repo_path> worktree add -b <branch> <worktree_path> main
 ```
 
-Write the workspace record using the **Write a workspace record** snippet with values from the plan JSON.
+Write the workspace record using the **Write a workspace record** snippet with values from the plan JSON. For `next_step` on a fresh workspace, default to `"read the issue and decide on an approach"` unless the user's `extra_instructions` already imply something more concrete (e.g. "fix the off-by-one in foo.c" → `next_step` = `"fix the off-by-one in foo.c"`).
+
+#### Refresh `next_step` whenever you learn something
+
+Whether you just created the workspace, resumed it, or merely talked about it, end the turn by running **Update workspace fields** with a refreshed `next_step` if your understanding of the next action has changed. Cheap to overwrite, expensive to leave stale. Examples that warrant an update:
+
+- User describes a concrete next action ("now I need to add tests for the empty-list case").
+- A PR is opened or its review state changes.
+- CI fails or passes on a meaningful push.
+- The work is blocked on an external decision — record the blocker as `next_step`.
 
 #### Launch Claude in the session
 
