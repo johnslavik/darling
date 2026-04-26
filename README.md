@@ -8,19 +8,28 @@ Invoke `/darling` from Claude with an issue number or GitHub URL to open a works
 
 ## Install
 
-Darling ships as an **agent skill** that doubles as a **slash command**. In Claude Code, a skill named `darling` is invocable as `/darling …` *and* autoloads via its `description` field — same file, two entry points, no `CLAUDE.md` glue required.
+Darling ships as a single [Agent Skill](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills) that every supported runtime recognises. The same `SKILL.md` provides description-based autoload **and** the `/darling` slash command — one file, multiple entry points, no `CLAUDE.md` glue.
 
 ```bash
 git clone https://github.com/johnslavik/darling ~/OSS/darling
+SRC=~/OSS/darling/.claude/skills/darling
 
-# Claude Code (per-user)
-ln -sf ~/OSS/darling/.claude/skills/darling ~/.claude/skills/darling
+# Claude Code              — scans ~/.claude/skills
+ln -sfn "$SRC" ~/.claude/skills/darling
 
-# Subagents / other agent runtimes that read ~/.agents/skills
-ln -sf ~/OSS/darling/.claude/skills/darling ~/.agents/skills/darling
+# Subagents / agent SDKs   — scan ~/.agents/skills
+mkdir -p ~/.agents/skills && ln -sfn "$SRC" ~/.agents/skills/darling
+
+# GitHub Copilot CLI       — also scans ~/.claude/skills and ~/.agents/skills
+# (the two links above are already picked up; only add this if you want
+#  Copilot to find darling in isolation)
+mkdir -p ~/.copilot/skills && ln -sfn "$SRC" ~/.copilot/skills/darling
+
+# pi (badlogic/pi-mono)    — scans ~/.pi/agent/skills, NOT ~/.claude/skills
+mkdir -p ~/.pi/agent/skills && ln -sfn "$SRC" ~/.pi/agent/skills/darling
 ```
 
-Both installs are symlinks back to the repo, so edits to `SKILL.md` take effect immediately in every consumer.
+Every install is a symlink to the repo — edits to `SKILL.md` propagate to every consumer immediately. After editing, run `/skills reload` (Copilot CLI) or restart the session in Claude/pi.
 
 To verify autoload, start a fresh agent session and ask "what are we working on" — the agent should pick up darling automatically. Explicit invocation also works (`/darling`, "darling, …", a bare issue number).
 
