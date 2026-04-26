@@ -870,11 +870,17 @@ EOF
 
 ### Execution narration
 
+All darling-originated output must be prefixed so the user can distinguish it from main-conversation chatter. Use an inline code span `` `[darling]` `` — Claude Code renders it with a monospace background tint, which is the closest thing to color we have.
+
 Before each action, output one line:
 ```
-→ <what and why>
+`[darling]` → <what and why>
 ```
-After it completes, output the key result in one line.
+After it completes, output the key result in one line, also prefixed:
+```
+`[darling]` <result>
+```
+Apply the prefix to every user-facing line emitted while operating as darling, including final summaries and the post-delegation "Delegated. New Ghostty window..." message. Code blocks, table rows, and tool-call internals are exempt.
 
 ---
 
