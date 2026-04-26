@@ -42,6 +42,17 @@ Do **not** trigger darling for general questions about an issue ("what does gh-1
 
 ## Usage
 
+With the CLAUDE.md entry in place, you can invoke darling naturally:
+
+```
+work on gh-142372
+let's fix that cpython issue
+open a workspace for issue #142372
+darling, what's active?
+```
+
+Or explicitly with the slash command:
+
 ```
 /darling                          show active workspaces + queue
 /darling 142372                   open (or find) workspace for issue #142372
