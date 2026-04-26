@@ -15,6 +15,26 @@ ln -sf ~/OSS/darling/.claude/commands/darling.md ~/.claude/commands/darling.md
 
 The symlink makes `/darling` available globally in Claude Code. Since it's a symlink, edits to the skill file in the repo take effect immediately.
 
+Then add the following to `~/.claude/CLAUDE.md` (create the file if it doesn't exist) so Claude knows when to invoke darling automatically — without needing the `/darling` prefix:
+
+```markdown
+## Darling workspace manager
+
+Darling is a workspace manager for development tasks. Its skill is installed at `~/.claude/commands/darling.md`.
+
+Invoke the darling skill whenever the user's intent is to **start, resume, or manage work on a specific GitHub issue or development task** — regardless of whether they use the word "darling" or the `/darling` command. Examples that should trigger it:
+
+- "work on gh-142372"
+- "let's fix that cpython issue"
+- "open a workspace for the devguide ticket"
+- "darling, 142372"
+- any message where the user clearly wants to begin or check in on a concrete piece of work tied to a repo or issue
+
+When invoked this way, treat the issue reference (number, URL, or description) as `$ARGUMENTS` and follow the skill instructions exactly as if the user had typed `/darling <ref>`.
+
+Do **not** trigger darling for general questions about an issue ("what does gh-142372 say?"), code review, or anything where the user isn't starting/managing hands-on work.
+```
+
 ## Requirements
 
 - [ZMX](https://github.com/johnslavik/zmx) — terminal session manager
