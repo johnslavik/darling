@@ -176,6 +176,22 @@ def test_update_kb_notes_returns_false_when_not_found(data_dir):
     assert store.update_kb_notes(data_dir, "ghost", "note") is False
 
 
+def test_add_workspace_note(data_dir):
+    ws = store.new_workspace(
+        name="active-ws", description="d", repo_path="/r",
+        branch="b", worktree_path="/w", zmx_session="active-ws",
+    )
+    store.write_workspace(data_dir, ws)
+    result = store.add_workspace_note(data_dir, "active-ws", "learned something useful")
+    assert result is True
+    updated = store.read_workspace(data_dir, "active-ws")
+    assert "learned something useful" in updated["notes"]
+
+
+def test_add_workspace_note_returns_false_when_not_found(data_dir):
+    assert store.add_workspace_note(data_dir, "ghost", "note") is False
+
+
 # ── Queue ─────────────────────────────────────────────────────────────────────
 
 def test_enqueue_and_list(data_dir):

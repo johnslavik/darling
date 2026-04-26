@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import anthropic
 
-
-def _client(model: str) -> tuple[anthropic.Anthropic, str]:
-    return anthropic.Anthropic(), model
+_client = anthropic.Anthropic()
 
 
 def summarize(scrollback: str, model: str) -> str:
     if not scrollback.strip():
         return "Empty session — no activity recorded."
-    client, m = _client(model)
-    msg = client.messages.create(
-        model=m,
+    msg = _client.messages.create(
+        model=model,
         max_tokens=512,
         messages=[
             {
@@ -39,9 +36,8 @@ def search_kb(entries: list[dict], query: str, model: str) -> list[dict]:
         f"notes: {e.get('notes', '')[:200]}"
         for i, e in enumerate(entries)
     )
-    client, m = _client(model)
-    msg = client.messages.create(
-        model=m,
+    msg = _client.messages.create(
+        model=model,
         max_tokens=256,
         messages=[
             {
@@ -59,7 +55,8 @@ def search_kb(entries: list[dict], query: str, model: str) -> list[dict]:
     if text.lower() == "none":
         return []
     try:
-        indices = [int(x.strip()) for x in text.split(",") if x.strip().isdigit()]
+        parts = [x.strip() for x in text.split(",")]
+        indices = [int(x) for x in parts if x.isdigit()]
         return [entries[i] for i in indices if 0 <= i < len(entries)]
     except Exception:
         return []
@@ -77,9 +74,8 @@ def create_skill(entries: list[dict], skill_name: str, query: str, model: str) -
             f"**Outcome:** {e.get('pr_outcome', 'unknown')}"
             for e in entries
         )
-    client, m = _client(model)
-    msg = client.messages.create(
-        model=m,
+    msg = _client.messages.create(
+        model=model,
         max_tokens=1024,
         messages=[
             {

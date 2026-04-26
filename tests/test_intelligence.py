@@ -14,7 +14,7 @@ def _mock_anthropic(response_text: str):
     mock_msg.content = [mock_content]
     mock_client = MagicMock()
     mock_client.messages.create.return_value = mock_msg
-    return patch("darling.intelligence.anthropic.Anthropic", return_value=mock_client)
+    return patch("darling.intelligence._client", mock_client)
 
 
 def test_summarize_returns_claude_text():

@@ -4,7 +4,6 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 SCHEMA_VERSION = "1.0"
 
@@ -27,6 +26,10 @@ def _write(path: Path, data: dict) -> None:
         f.write("\n")
 
 
+def _append_note(existing: str, new: str) -> str:
+    return (existing + "\n\n" + new).strip()
+
+
 # ── Workspaces ──────────────────────────────────────────────────────────────
 
 def workspace_path(data_dir: Path, name: str) -> Path:
@@ -34,10 +37,7 @@ def workspace_path(data_dir: Path, name: str) -> Path:
 
 
 def read_workspace(data_dir: Path, name: str) -> dict | None:
-    path = workspace_path(data_dir, name)
-    if not path.exists():
-        return None
-    return _read(path)
+    return _read(workspace_path(data_dir, name)) or None
 
 
 def write_workspace(data_dir: Path, ws: dict) -> None:
@@ -46,17 +46,14 @@ def write_workspace(data_dir: Path, ws: dict) -> None:
 
 
 def delete_workspace_file(data_dir: Path, name: str) -> None:
-    path = workspace_path(data_dir, name)
-    if path.exists():
-        path.unlink()
+    try:
+        workspace_path(data_dir, name).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def list_workspaces(data_dir: Path) -> list[dict]:
-    ws_dir = data_dir / "workspaces"
-    result = []
-    for f in sorted(ws_dir.glob("*.json")):
-        result.append(_read(f))
-    return result
+    return [_read(f) for f in sorted((data_dir / "workspaces").glob("*.json"))]
 
 
 def new_workspace(
@@ -87,49 +84,46 @@ def new_workspace(
 def find_workspace(data_dir: Path, query: str) -> dict | None:
     query_lower = query.lower()
     for ws in list_workspaces(data_dir):
-        name = ws.get("name", "")
-        desc = ws.get("description", "")
-        if query_lower in name.lower() or query_lower in desc.lower():
+        if query_lower in ws.get("name", "").lower() or query_lower in ws.get("description", "").lower():
             return ws
     return None
+
+
+def add_workspace_note(data_dir: Path, workspace_name: str, note: str) -> bool:
+    ws = find_workspace(data_dir, workspace_name)
+    if not ws:
+        return False
+    ws["notes"] = _append_note(ws.get("notes", ""), note)
+    write_workspace(data_dir, ws)
+    return True
 
 
 # ── Knowledge base ───────────────────────────────────────────────────────────
 
 def write_kb_entry(data_dir: Path, entry: dict) -> Path:
     entry["schema_version"] = SCHEMA_VERSION
-    name = entry["name"]
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = data_dir / "knowledge_base" / f"{name}-{ts}.json"
+    path = data_dir / "knowledge_base" / f"{entry['name']}-{ts}.json"
     _write(path, entry)
     return path
 
 
 def list_kb_entries(data_dir: Path) -> list[dict]:
-    kb_dir = data_dir / "knowledge_base"
-    result = []
-    for f in sorted(kb_dir.glob("*.json"), reverse=True):
-        result.append(_read(f))
-    return result
+    return [_read(f) for f in sorted((data_dir / "knowledge_base").glob("*.json"), reverse=True)]
 
 
 def find_kb_entry(data_dir: Path, workspace_name: str) -> dict | None:
-    kb_dir = data_dir / "knowledge_base"
-    matches = sorted(kb_dir.glob(f"{workspace_name}-*.json"), reverse=True)
-    if matches:
-        return _read(matches[0])
-    return None
+    matches = sorted((data_dir / "knowledge_base").glob(f"{workspace_name}-*.json"), reverse=True)
+    return _read(matches[0]) if matches else None
 
 
 def update_kb_notes(data_dir: Path, workspace_name: str, note: str) -> bool:
-    kb_dir = data_dir / "knowledge_base"
-    matches = sorted(kb_dir.glob(f"{workspace_name}-*.json"), reverse=True)
+    matches = sorted((data_dir / "knowledge_base").glob(f"{workspace_name}-*.json"), reverse=True)
     if not matches:
         return False
     path = matches[0]
     entry = _read(path)
-    existing = entry.get("notes", "")
-    entry["notes"] = (existing + "\n\n" + note).strip()
+    entry["notes"] = _append_note(entry.get("notes", ""), note)
     _write(path, entry)
     return True
 
@@ -195,8 +189,7 @@ def enqueue(
 
 
 def list_queue(data_dir: Path, include_done: bool = False) -> list[dict]:
-    queue = _load_queue(data_dir)
-    items = queue.get("items", [])
+    items = _load_queue(data_dir).get("items", [])
     if not include_done:
         items = [i for i in items if i.get("status") == "pending"]
     return items

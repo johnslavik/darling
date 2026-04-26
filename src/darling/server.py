@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from mcp.server.fastmcp import FastMCP
 
 from darling import github, intelligence, store, workspace, zmx
@@ -7,6 +9,25 @@ from darling.config import load_config
 
 mcp = FastMCP("darling")
 _config = load_config()
+
+
+def _format_kb_entry(e: dict) -> dict:
+    return {
+        "name": e.get("name"),
+        "description": e.get("description"),
+        "summary": e.get("scrollback_summary"),
+        "outcome": e.get("pr_outcome"),
+        "pr_url": e.get("pr_url"),
+        "date": e.get("completed_at", "")[:10],
+        "notes": e.get("notes"),
+    }
+
+
+def _search_kb(query: str) -> list[dict]:
+    entries = store.list_kb_entries(_config.data_dir)
+    if not entries:
+        return []
+    return intelligence.search_kb(entries, query, _config.anthropic_model)
 
 
 # ── Workspace lifecycle ───────────────────────────────────────────────────────
@@ -38,40 +59,23 @@ def create_workspace(
         base_branch=base_branch,
     )
 
-    kb_entries = store.list_kb_entries(_config.data_dir)
-    related = intelligence.search_kb(kb_entries, description, _config.anthropic_model) if kb_entries else []
-
     return {
         "workspace": ws,
-        "related_past_experiences": [
-            {
-                "name": e.get("name"),
-                "description": e.get("description"),
-                "summary": e.get("scrollback_summary"),
-                "outcome": e.get("pr_outcome"),
-                "date": e.get("completed_at", "")[:10],
-                "notes": e.get("notes"),
-            }
-            for e in related
-        ],
+        "related_past_experiences": [_format_kb_entry(e) for e in _search_kb(description)],
     }
 
 
 @mcp.tool()
 def list_workspaces() -> list[dict]:
     """List all active workspaces."""
-    from datetime import datetime, timezone
-
     results = []
     for ws in store.list_workspaces(_config.data_dir):
-        created = ws.get("created_at", "")
         age = ""
+        created = ws.get("created_at", "")
         if created:
             try:
-                dt = datetime.fromisoformat(created)
-                delta = datetime.now(timezone.utc) - dt
-                days = delta.days
-                age = f"{days}d" if days else f"{delta.seconds // 3600}h"
+                delta = datetime.now(timezone.utc) - datetime.fromisoformat(created)
+                age = f"{delta.days}d" if delta.days else f"{delta.seconds // 3600}h"
             except Exception:
                 pass
         results.append({
@@ -95,11 +99,9 @@ def get_workspace(name: str) -> dict:
         return {"error": f"No workspace matching '{name}'"}
 
     scrollback = zmx.history(ws.get("zmx_session", ws["name"]))
-    summary = intelligence.summarize(scrollback, _config.anthropic_model)
-
     return {
         "workspace": ws,
-        "session_summary": summary,
+        "session_summary": intelligence.summarize(scrollback, _config.anthropic_model),
     }
 
 
@@ -207,6 +209,7 @@ def check_prs() -> dict:
     workspaces = store.list_workspaces(_config.data_dir)
     enqueued = []
     errors = []
+    checked = 0
 
     for ws in workspaces:
         pr_url = ws.get("pr_url")
@@ -216,6 +219,7 @@ def check_prs() -> dict:
         if not (pr_url and pr_number and pr_repo):
             continue
 
+        checked += 1
         owner, repo = pr_repo.split("/", 1)
         try:
             status = github.get_pr_status(owner, repo, int(pr_number))
@@ -241,11 +245,7 @@ def check_prs() -> dict:
             )
             enqueued.append({"workspace": ws["name"], "task_id": item_id, "outcome": outcome})
 
-    return {
-        "enqueued": enqueued,
-        "errors": errors,
-        "checked": len([w for w in workspaces if w.get("pr_url")]),
-    }
+    return {"enqueued": enqueued, "errors": errors, "checked": checked}
 
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
@@ -253,18 +253,10 @@ def check_prs() -> dict:
 @mcp.tool()
 def add_note(workspace_name: str, note: str) -> dict:
     """Add a retrospective note to a workspace's knowledge base record."""
-    # Try KB first (already completed), then active workspace
-    updated = store.update_kb_notes(_config.data_dir, workspace_name, note)
-    if updated:
+    if store.update_kb_notes(_config.data_dir, workspace_name, note):
         return {"updated": workspace_name, "storage": "knowledge_base"}
-
-    ws = store.find_workspace(_config.data_dir, workspace_name)
-    if ws:
-        existing = ws.get("notes", "")
-        ws["notes"] = (existing + "\n\n" + note).strip()
-        store.write_workspace(_config.data_dir, ws)
+    if store.add_workspace_note(_config.data_dir, workspace_name, note):
         return {"updated": workspace_name, "storage": "workspace"}
-
     return {"error": f"No workspace or KB entry matching '{workspace_name}'"}
 
 
@@ -272,30 +264,14 @@ def add_note(workspace_name: str, note: str) -> dict:
 def search_history(query: str) -> list[dict]:
     """Search the knowledge base with a natural language query. Claude finds
     relevant past workspace records."""
-    entries = store.list_kb_entries(_config.data_dir)
-    if not entries:
-        return []
-    matches = intelligence.search_kb(entries, query, _config.anthropic_model)
-    return [
-        {
-            "name": e.get("name"),
-            "description": e.get("description"),
-            "summary": e.get("scrollback_summary"),
-            "notes": e.get("notes"),
-            "outcome": e.get("pr_outcome"),
-            "pr_url": e.get("pr_url"),
-            "date": e.get("completed_at", "")[:10],
-        }
-        for e in matches
-    ]
+    return [_format_kb_entry(e) for e in _search_kb(query)]
 
 
 @mcp.tool()
 def create_skill_from_notes(query: str, skill_name: str) -> dict:
     """Search KB for relevant experiences and ask Claude to draft a
     ~/.claude/commands/{skill_name}.md skill file from them."""
-    entries = store.list_kb_entries(_config.data_dir)
-    relevant = intelligence.search_kb(entries, query, _config.anthropic_model) if entries else []
+    relevant = _search_kb(query)
     draft = intelligence.create_skill(relevant, skill_name, query, _config.anthropic_model)
     return {
         "skill_name": skill_name,

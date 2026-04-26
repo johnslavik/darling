@@ -5,9 +5,14 @@ import subprocess
 
 import httpx
 
+_token_cache: str | None = None
+
 
 def _token() -> str:
-    return subprocess.check_output(["gh", "auth", "token"], text=True).strip()
+    global _token_cache
+    if _token_cache is None:
+        _token_cache = subprocess.check_output(["gh", "auth", "token"], text=True).strip()
+    return _token_cache
 
 
 def _headers() -> dict[str, str]:
