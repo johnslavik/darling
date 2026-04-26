@@ -161,11 +161,12 @@ If found: show the workspace details and stop — do not create a new one.
 
 #### Step 3 — resolve repo
 
-Read `~/.local/share/darling/repos.json`.
-
-- 1 registered repo → use it automatically.
-- Multiple repos → list them and ask the user to pick one.
-- No repos registered → ask the user for the local path.
+1. Run `git rev-parse --show-toplevel` in the current working directory.
+   - If it succeeds → use that path as the repo. Done.
+2. If cwd is not inside a git repo, fall back to `~/.local/share/darling/repos.json`:
+   - 1 registered repo → use it automatically.
+   - Multiple repos → list them and ask the user to pick one.
+   - No repos registered → ask the user for the local path.
 
 #### Step 4 — fetch issue details
 

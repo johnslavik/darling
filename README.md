@@ -35,16 +35,12 @@ The symlink makes `/darling` available globally in Claude Code. Since it's a sym
 /darling next                     run next queued task
 ```
 
-## Repo registry
+## Repo resolution
 
-Register your local clones so `/darling 142372` can resolve without a full URL:
+When you give darling a bare issue number, it resolves the repo by:
 
-```
-/darling register cpython ~/Python/cpython
-/darling register devguide ~/Python/devguide
-```
-
-If more than one repo is registered and the issue could belong to any of them, darling asks you to pick.
+1. **Current directory** — if you're inside a git repo, that's the one. No config needed.
+2. **Registry fallback** — if cwd isn't a git repo, darling checks `~/.local/share/darling/repos.json`. Register clones with `/darling register <alias> <path>`. If multiple match, darling asks you to pick.
 
 ## Conventions
 
