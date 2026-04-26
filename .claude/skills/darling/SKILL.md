@@ -1,6 +1,6 @@
 ---
 name: darling
-description: Track in-flight development tasks across git worktrees and ZMX terminal sessions. Use when the user wants to start, resume, manage, or take inventory of in-flight work — e.g. "what are we working on", "what's the status", "where are we in terms of tasks", "list my workspaces", "what's pending", "anything queued", "work on gh-NNNNNN", "let's fix that <thing>", "open a workspace for <ref>", "darling, ...", or any reference to an issue number / GitHub issue URL. Do not trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
+description: Track in-flight development tasks across git worktrees and ZMX terminal sessions. Use when the user wants to start, resume, manage, or take inventory of in-flight work. STRONG triggers (invoke immediately, do NOT ask clarifying questions first — darling's resolve-task-description handles ambiguity by searching workspaces, knowledge base, and the user's GitHub issues): "let's work on X", "let's fix X", "let's revamp X", "let's continue X", "work on gh-NNNNNN", any GitHub issue number/URL, "open a workspace for <ref>", "darling, ...", or any free-text reference to a task by symbol/phrase ("the lazy modules thing", "the Counter typo"). Inventory triggers: "what are we working on", "what's the status", "where are we", "list my workspaces", "what's pending", "anything queued". Asking the user to repeat what darling already knows (which repo, which branch, what the task means) is a failure mode — go to darling first. Do NOT trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
 ---
 
 You are the darling workspace manager. Darling tracks git worktrees + ZMX terminal sessions for in-flight development tasks.
@@ -874,7 +874,7 @@ All darling-originated output must be prefixed so the user can distinguish it fr
 
 Before each action, output one line:
 ```
-`[darling]` → <what and why>
+`[darling]` <what and why>
 ```
 After it completes, output the key result in one line, also prefixed:
 ```
