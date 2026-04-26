@@ -6,7 +6,7 @@ The user invoked `/darling` with these arguments: $ARGUMENTS
 
 ## State
 
-All state lives in `~/.local/share/darling/`. Read and write it directly with the Read and Write tools (or Bash for listing/globbing).
+All state lives in `~/.local/share/darling/`. Read and write it directly with the Bash tool using the Python snippets below — never construct JSON by hand.
 
 ```
 ~/.local/share/darling/
@@ -61,6 +61,189 @@ All state lives in `~/.local/share/darling/`. Read and write it directly with th
 
 ---
 
+## Python snippets for state operations
+
+Use these exact snippets via the Bash tool. Substitute `<placeholders>` with real values.
+
+### Find a workspace by issue number
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
+ws = [json.loads(f.read_text()) for f in p.glob("*.json")]
+match = next((w for w in ws if "gh-<issue_number>" in w["branch"] or "#<issue_number>" in w.get("description", "")), None)
+print(json.dumps(match) if match else "null")
+EOF
+```
+
+### Read all workspaces
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
+ws = [json.loads(f.read_text()) for f in sorted(p.glob("*.json"))]
+print(json.dumps(ws, indent=2))
+EOF
+```
+
+### Write a workspace record
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+record = {
+    "name": "<workspace_name>",
+    "description": "#<issue_number>: <issue_title>",
+    "repo_path": "<repo_path>",
+    "branch": "<branch>",
+    "worktree_path": "<worktree_path>",
+    "zmx_session": "<workspace_name>",
+    "pr_url": None,
+    "pr_number": None,
+    "pr_repo": None,
+    "created_at": "<iso_utc_now>",
+    "status": "active",
+    "notes": ""
+}
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+p.write_text(json.dumps(record, indent=2))
+print("written:", p)
+EOF
+```
+
+### Delete a workspace record
+
+```bash
+python3 -c "
+import pathlib
+p = pathlib.Path('~/.local/share/darling/workspaces/<workspace_name>.json').expanduser()
+p.unlink()
+print('deleted:', p)
+"
+```
+
+### Archive a workspace to knowledge_base
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+src = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(src.read_text())
+record["archived_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
+kb.mkdir(parents=True, exist_ok=True)
+ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+dest = kb / f"<workspace_name>-{ts}.json"
+dest.write_text(json.dumps(record, indent=2))
+print("archived to:", dest)
+EOF
+```
+
+### Read queue (pending items only)
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text()) if p.exists() else {"items": []}
+pending = [i for i in q["items"] if i["status"] == "pending"]
+print(json.dumps(pending, indent=2))
+EOF
+```
+
+### Append item to queue
+
+```python
+python3 - << 'EOF'
+import json, pathlib, secrets, datetime
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text()) if p.exists() else {"items": []}
+q["items"].append({
+    "id": secrets.token_hex(4),
+    "task_prompt": "<task_prompt>",
+    "workspace_name": "<workspace_name>",
+    "status": "pending",
+    "queued_at": datetime.datetime.utcnow().isoformat() + "Z",
+    "processed_at": None,
+    "outcome": None
+})
+p.write_text(json.dumps(q, indent=2))
+print("queued:", q["items"][-1]["id"])
+EOF
+```
+
+### Mark queue item done
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text())
+item = next(i for i in q["items"] if i["id"] == "<item_id>")
+item["status"] = "done"
+item["processed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+item["outcome"] = "<outcome>"
+p.write_text(json.dumps(q, indent=2))
+print("done:", item["id"])
+EOF
+```
+
+### Read repos
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+print(json.dumps(repos["repos"], indent=2))
+EOF
+```
+
+### Upsert repo
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
+repos["repos"].append({"alias": "<alias>", "path": "<path>"})
+p.write_text(json.dumps(repos, indent=2))
+print("upserted:", "<alias>")
+EOF
+```
+
+### Remove repo
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
+p.write_text(json.dumps(repos, indent=2))
+print("removed:", "<alias>")
+EOF
+```
+
+### Derive slug and names from issue title
+
+```python
+python3 - << 'EOF'
+import re
+title = "<issue_title>"
+issue_number = "<issue_number>"
+slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
+branch = f"gh-{issue_number}-{slug}"
+workspace_name = branch[:60]
+print(f"slug={slug}\nbranch={branch}\nworkspace_name={workspace_name}")
+EOF
+```
+
+---
+
 ## Dispatch
 
 Match `$ARGUMENTS` to the first rule that applies:
@@ -84,62 +267,56 @@ Match `$ARGUMENTS` to the first rule that applies:
 
 ### status
 
-1. Glob `~/.local/share/darling/workspaces/*.json` and read each file.
-2. Read `~/.local/share/darling/queue.json` (if it exists).
-3. Summarise: list active workspaces with name, branch, age; count pending queue items.
+Run the **Read all workspaces** snippet and the **Read queue (pending items only)** snippet. Summarise: list active workspaces with name, branch, age; count pending queue items.
 
 ---
 
 ### list-workspaces
 
-Read all files in `~/.local/share/darling/workspaces/` and print a table: name, branch, repo, age, pr_url.
+Run the **Read all workspaces** snippet. Print a table: name, branch, repo, age, pr_url.
 
 ---
 
 ### list-queue
 
-Read `~/.local/share/darling/queue.json`. Show pending items only (status == "pending").
+Run the **Read queue (pending items only)** snippet. Show each item's id, workspace_name, and task_prompt.
 
 ---
 
 ### list-repos
 
-Read `~/.local/share/darling/repos.json`. Print alias → path pairs.
+Run the **Read repos** snippet. Print alias → path pairs.
 
 ---
 
 ### register-repo
 
-Parse `alias` and `path` from `$ARGUMENTS` (format: `register <alias> <path>`).
-Read `~/.local/share/darling/repos.json` (or start with `{"repos": []}`).
-Upsert the entry (replace if alias already exists). Write back.
+Parse `alias` and `path` from `$ARGUMENTS`. Run the **Upsert repo** snippet with those values.
 
 ---
 
 ### unregister-repo
 
-Parse `alias`. Read repos.json, filter out that alias, write back.
+Parse `alias` from `$ARGUMENTS`. Run the **Remove repo** snippet.
 
 ---
 
 ### check-prs
 
-For each workspace that has a non-null `pr_url`:
-1. Parse owner/repo/number from the URL.
-2. Run `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt` via Bash.
-3. If merged or closed: add a cleanup task to queue.json with a prompt like:
-   > "Workspace '<name>' PR was <merged|closed>. Delete the workspace: kill ZMX session '<zmx_session>', remove git worktree at '<worktree_path>', archive scrollback to knowledge base, delete the branch '<branch>'."
-
-To append to queue.json: read it (or init empty), push a new item with a random 8-char hex id and `status: "pending"`, write back.
+1. Run **Read all workspaces**. For each with a non-null `pr_url`:
+2. Parse owner/repo/number from the URL.
+3. Run `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt`.
+4. If merged or closed: run **Append item to queue** with a prompt like:
+   > "Workspace '<name>' PR was <merged|closed>. Delete the workspace: kill ZMX session '<zmx_session>', remove git worktree at '<worktree_path>', archive to knowledge base, delete branch '<branch>'."
 
 ---
 
 ### run-next-task
 
-1. Read queue.json, find the oldest item with `status == "pending"`.
+1. Run **Read queue (pending items only)**. Take the first item.
 2. If none: say "Queue is empty."
-3. Print the task prompt and execute it using available tools (Bash, Read, Write, etc.).
-4. On completion: update the item in queue.json — set `status: "done"`, `processed_at: <now>`, `outcome: <brief result>`. Write back.
+3. Print the task prompt and execute it using available tools.
+4. On completion: run **Mark queue item done** with the item's id and a brief outcome.
 
 ---
 
@@ -159,81 +336,57 @@ Extraction rules:
 
 #### Step 2 — check for existing workspace
 
-Glob and read all workspace JSON files. Look for any where:
-- `branch` contains `gh-<issue_number>`
-- `description` contains `#<issue_number>`
-
-If found: note the existing workspace details, **skip Steps 3, 5, and 6** (no repo resolution, no name derivation, no worktree/session creation), then **go directly to Step 4** to fetch issue details and **Step 7** to delegate. The existing workspace fields (worktree_path, zmx_session, branch, repo_path) are already known.
+Run the **Find a workspace by issue number** snippet. If result is not `null`: note the existing workspace fields, **skip Steps 3, 5, and 6**, go directly to Step 4 then Step 7.
 
 #### Step 3 — resolve repo
 
-1. Run `git rev-parse --show-toplevel` in the current working directory.
-   - If it succeeds → use that path as the repo. Done.
-2. If cwd is not inside a git repo, fall back to `~/.local/share/darling/repos.json`:
-   - 1 registered repo → use it automatically.
-   - Multiple repos → list them and ask the user to pick one.
-   - No repos registered → ask the user for the local path.
+1. Run `git rev-parse --show-toplevel`. If it succeeds → repo_path is that value.
+2. Else run **Read repos**:
+   - 1 entry → use it automatically.
+   - Multiple → ask the user to pick.
+   - 0 → ask the user for the path.
 
 #### Step 4 — fetch issue details
 
-Run: `gh issue view <issue_number> --repo <owner>/<repo_name> --json title,number,body`
+Derive owner/repo from repo_path: run `git -C <repo_path> remote get-url origin` and parse `github.com/<owner>/<repo_name>`.
 
-Derive `owner/repo_name` from the repo path:
-- Run `git remote get-url origin` in the repo directory.
-- Parse `github.com/<owner>/<repo_name>` from the output.
+Run: `gh issue view <issue_number> --repo <owner>/<repo_name> --json title,number,body`
 
 #### Step 5 — derive names
 
-Given `issue_number` and `issue_title`:
-
-- **slug**: lowercase the title, replace spaces and special chars with hyphens, collapse consecutive hyphens, truncate to 50 chars.
-- **branch**: `gh-<issue_number>-<slug>`
-  e.g. `gh-142372-document-pycf-allow-incomplete-input`
-- **worktree_path**: `<parent_of_repo>/<repo_name>-worktrees/gh-<issue_number>`
-  e.g. `/Users/me/Python/cpython-worktrees/gh-142372`
-- **workspace_name**: same as branch, truncated to 60 chars
+Run the **Derive slug and names** snippet with the issue title and number. Also set:
+- **worktree_path**: `<parent_of_repo_path>/<repo_name>-worktrees/gh-<issue_number>`
 
 #### Step 6 — create the workspace
 
-Run in the repo directory:
-```
-git worktree add -b <branch> <worktree_path> main
+```bash
+git -C <repo_path> worktree add -b <branch> <worktree_path> main
+zmx attach <workspace_name>   # cwd = worktree_path
 ```
 
-Then start a ZMX session:
-```
-zmx attach <workspace_name>
-```
-(run this command with cwd set to the worktree_path)
-
-Write the workspace JSON to `~/.local/share/darling/workspaces/<workspace_name>.json`.
+Run the **Write a workspace record** snippet with all derived values. Use `python3 -c "import datetime; print(datetime.datetime.utcnow().isoformat()+'Z')"` for `created_at`.
 
 #### Step 6.5 — check for an existing ZMX session
 
-Before launching anything, run:
-```bash
-zmx list
-```
+Run `zmx list`. Look for a session named `<workspace_name>`.
 
-Look for a session whose name matches `<workspace_name>`.
-
-- **Session exists**: run `zmx tail -n 50 <workspace_name>` to read recent output and assess state:
-  - If Claude is actively running (output shows tool calls, reasoning, etc.) → tell the user it's already working and stop.
-  - If Claude finished or is idle → note this; proceed to Step 7 to send a new prompt.
-  - If the session looks broken/stalled → kill it first (`zmx kill <workspace_name> --force`), then proceed.
-- **No session**: proceed directly to Step 7 (attach will create it).
+- **Session exists**: run `zmx tail -n 50 <workspace_name>` to assess state:
+  - Claude actively running → tell the user and stop.
+  - Claude idle/finished → proceed to Step 7.
+  - Broken/stalled → `zmx kill <workspace_name> --force`, then proceed.
+- **No session**: proceed.
 
 #### Step 7 — launch Claude in the session
 
-Compose a task prompt string. The prompt must be self-contained — the Claude instance receiving it has no memory of this conversation. Include:
+Compose a self-contained prompt (the receiving Claude has no memory of this conversation):
 
-1. The task: `"Work on issue #<number>: <title>."`
-2. Issue body verbatim (so Claude has full context)
-3. Workspace context: repo path, branch name, worktree path
-4. Extra instructions if any (verbatim, high priority — place these last so they override)
-5. A closing line: `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+1. `"Work on issue #<number>: <title>."`
+2. Issue body verbatim
+3. Workspace context: repo path, branch, worktree path
+4. Extra instructions verbatim (high priority — place last)
+5. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
 
-Write the prompt to a temp file to avoid shell-escaping issues, then pipe it into Claude running inside the session:
+Write to temp file and pipe:
 
 ```bash
 cat > /tmp/darling-<issue_number>.txt << 'DARLING_EOF'
@@ -243,7 +396,7 @@ DARLING_EOF
 zmx run -d <workspace_name> sh -c 'claude < /tmp/darling-<issue_number>.txt'
 ```
 
-Note: insert any desired permission flags between `claude` and `<` — use whatever the project or user has configured.
+Insert any desired permission flags between `claude` and `<`.
 
 **Do not ask for confirmation before creating or delegating.**
 
@@ -251,23 +404,15 @@ Note: insert any desired permission flags between `claude` and `<` — use whate
 
 ## Execution narration
 
-For every step you execute, output a one-line header before running it so the user can follow along:
-
+Before each step, output:
 ```
-→ Step N: <what you are about to do and why>
+→ Step N: <what and why>
 ```
-
-Examples:
-- `→ Step 1: Parsing issue number from arguments`
-- `→ Step 2: Checking for existing workspace matching gh-148587`
-- `→ Step 4: Fetching issue title and body from GitHub (needed for the prompt)`
-- `→ Step 7: Writing prompt to temp file and piping into ZMX session`
-
-After each step completes, output the key result in one line. This makes the flow transparent without being verbose.
+After it completes, output the key result in one line.
 
 ---
 
-## Worktree conventions (always follow these)
+## Worktree conventions
 
 - Branch: `gh-<issue_number>-<slug>`
 - Worktree directory: `<repo_parent>/<repo_name>-worktrees/gh-<issue_number>/`
@@ -275,10 +420,8 @@ After each step completes, output the key result in one line. This makes the flo
 
 ## Deleting a workspace
 
-When a cleanup task asks you to delete a workspace:
-
-1. Run `zmx kill <zmx_session> --force` (ignore errors).
-2. Run `git worktree remove --force <worktree_path>` in the repo directory.
-3. Optionally run `git branch -D <branch>` if instructed.
-4. Write an archive entry to `~/.local/share/darling/knowledge_base/<name>-<timestamp>.json`.
-5. Delete `~/.local/share/darling/workspaces/<name>.json`.
+1. `zmx kill <zmx_session> --force` (ignore errors)
+2. `git -C <repo_path> worktree remove --force <worktree_path>`
+3. `git -C <repo_path> branch -D <branch>` (if instructed)
+4. Run **Archive a workspace to knowledge_base**
+5. Run **Delete a workspace record**
