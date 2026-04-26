@@ -428,7 +428,20 @@ Compose a self-contained prompt (the receiving Claude has no memory of this conv
    > **Do NOT open or create pull requests.** Never run `gh pr create` or any equivalent. If a PR already exists for this branch, pushing updates it — that's fine. If no PR exists, leave it that way; the user will open the PR themselves. Only open a PR if the user has explicitly asked you to in this session's instructions.
    >
    > End by reporting the commit SHA and (if a PR already existed) the PR URL."
-6. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+6. **Repo-specific skill block** — see *Repo-specific skill injection* below. If the worktree is a known repo (cpython today), inject the matching paragraph verbatim.
+7. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+
+##### Repo-specific skill injection
+
+The launched Claude has skills available but no guarantee it will load the right ones. For repos with strong workflow conventions, inject an explicit "load these skills" instruction so the agent can't skip them.
+
+Detect the repo by looking at all of: `repo_name` (from origin remote), `worktree_path`, and the upstream remote (run `git -C <repo_path> remote -v` and look for `python/cpython.git` etc.). Path-only matching is enough for forks where origin points elsewhere.
+
+| Repo signature | Inject this paragraph (verbatim) |
+|---|---|
+| `repo_name == "cpython"` OR upstream/origin contains `python/cpython` OR worktree path matches `*/cpython*` | **"This is a CPython worktree — CPython has strong, codified contribution conventions. Before doing anything else, invoke the `cpython:dev` skill: it orients you on the codebase and pulls in `cpython:build` (compile + tests via `./configure` and `make`, NOT pytest), `cpython:style` (PEP 7/8, patchcheck, the no-type-annotations-in-Lib rule), `cpython:docs` (NEWS entries, versionadded markers, .rst docs), and `cpython:jit` as your workflow needs them. Also follow `cpython-workflow` for branch/commit/issue conventions. These skills are non-optional for CPython work — using them is part of the task, not an extra step."** |
+
+Add a row when a new repo gets its own skill family. Until a repo is in this table, skip step 6 — don't invent skill names.
 
 Write to temp file and launch entirely in the background — never call `zmx attach` (interactive, leaks to caller's terminal):
 
