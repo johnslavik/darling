@@ -453,7 +453,7 @@ Tell the user:
 
 ### Pipeline self-healing
 
-The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `~/.claude/commands/darling.md` before reporting back**. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
+The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `.claude/skills/darling/SKILL.md` in the darling repo (typically `~/OSS/darling/`) before reporting back**. The skill is the single source of truth for both the `/darling` slash command and skill-description autoload — installs are symlinks back to that file. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
 
 When you patch the skill, finish the user's request first if you can, then surface a one-line note about what you changed.
 

@@ -8,16 +8,21 @@ Invoke `/darling` from Claude with an issue number or GitHub URL to open a works
 
 ## Install
 
-Darling ships as an **agent skill** (not a slash command), so it autoloads in any compatible agent (Claude Code, Copilot CLI, etc.) based on the `description` field in `SKILL.md` — no `CLAUDE.md` glue required.
+Darling ships as an **agent skill** that doubles as a **slash command**. In Claude Code, a skill named `darling` is invocable as `/darling …` *and* autoloads via its `description` field — same file, two entry points, no `CLAUDE.md` glue required.
 
 ```bash
 git clone https://github.com/johnslavik/darling ~/OSS/darling
+
+# Claude Code (per-user)
 ln -sf ~/OSS/darling/.claude/skills/darling ~/.claude/skills/darling
+
+# Subagents / other agent runtimes that read ~/.agents/skills
+ln -sf ~/OSS/darling/.claude/skills/darling ~/.agents/skills/darling
 ```
 
-The symlink installs the skill globally. Because it's a symlink to the repo, edits to `SKILL.md` take effect immediately.
+Both installs are symlinks back to the repo, so edits to `SKILL.md` take effect immediately in every consumer.
 
-To verify autoload, start a fresh agent session and ask "what are we working on" — the agent should pick up darling automatically. Explicit invocation also works (`/darling`, "darling, …", etc.) for any agent that surfaces skills via slash commands.
+To verify autoload, start a fresh agent session and ask "what are we working on" — the agent should pick up darling automatically. Explicit invocation also works (`/darling`, "darling, …", a bare issue number).
 
 ## Requirements
 
