@@ -443,10 +443,12 @@ zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "
 
 After delegation, open a new Ghostty window attached to the session so the user can watch.
 
-Ghostty's `-e` runs the command without a login shell, so `$PATH` is bare and `zmx` is not found — the window flashes "Process exited". Wrap in a login shell so `~/.zshrc`/`~/.bash_profile` populate `PATH`:
+Ghostty's `-e` runs the command without a login shell, so `$PATH` is bare and `zmx` is not found — the window flashes "Process exited". Wrap in a login shell so `~/.zshrc`/`~/.bash_profile` populate `PATH`.
+
+`-e` takes the executable and its args as **separate** tokens — quoting them all as one string makes `open` pass it as a single argv[0], which `login` then treats as a username (`login: bash -lc '...': No such file or directory`). Split into individual `--args` tokens:
 
 ```bash
-open -na Ghostty.app --args -e "/bin/bash -lc 'zmx attach <workspace_name>'"
+open -na Ghostty.app --args -e /bin/bash -lc "zmx attach <workspace_name>"
 ```
 
 Tell the user:
