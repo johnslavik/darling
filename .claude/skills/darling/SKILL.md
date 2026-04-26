@@ -388,7 +388,12 @@ PLAN_EOF
 
 Read the JSON output and proceed:
 
-- **`action == "resume"` and `session_exists == true`**: run `zmx history <workspace_name> | tail -50` to check state. If Claude actively running → tell user and stop. If idle/finished → relaunch via `zmx run`. If broken → `zmx kill <workspace_name> --force`, then relaunch via `zmx run`.
+- **`action == "resume"` and `session_exists == true`**: run `zmx history <workspace_name> | tail -50` to check state.
+  - **Claude actively running** (spinner like "Working…", a tool call line in flight) → tell user and stop. Do not interrupt.
+  - **Idle Claude REPL** (last lines show a finished session sitting at "new task?" / `❯` prompt — `zmx run` here does NOT execute a shell command, it types into Claude's input buffer) → **`zmx kill <workspace_name> --force` first**, then relaunch via `zmx run`. Never try to "reuse" the idle REPL.
+  - **Broken / dead shell** (terminal output, no Claude UI) → `zmx kill <workspace_name> --force`, then relaunch via `zmx run`.
+
+  Rule of thumb: any time the existing session has a Claude REPL inside it, kill before relaunching. `zmx run` only safely creates a *new* session.
 - **`action == "resume"` and `session_exists == false`**: relaunch via `zmx run` (no worktree/record creation needed).
 - **`action == "create"`**: create worktree, write record, then launch.
 
