@@ -4,357 +4,6 @@ The user invoked `/darling` with these arguments: $ARGUMENTS
 
 ---
 
-## Pipeline self-healing
-
-The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `~/.claude/commands/darling.md` before reporting back**. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
-
-When you patch the skill, finish the user's request first if you can, then surface a one-line note about what you changed.
-
----
-
-## zmx session sanity check
-
-After every `zmx run` launch, verify the session is alive AND running the intended command. zmx silently accepts launches that exit immediately, so a "session created" message is not proof of success.
-
-Run this immediately after `zmx run`:
-
-```bash
-sleep 2
-zmx list --short | grep -qx "<workspace_name>" || echo "MISSING: session not in zmx list"
-zmx history <workspace_name> 2>&1 | tail -20
-```
-
-The history tail must show evidence the intended command is running:
-
-- For Claude launches: a Claude prompt box, "Working…", a tool call line, or the literal prompt text echoed.
-- For raw shell commands: the expected stdout/banner.
-
-If the tail shows a bare shell prompt, "Process exited", "command not found", or is empty after 2s, the launch failed. Surface the history to the user, kill the session with `zmx kill <workspace_name> --force`, fix the root cause (PATH, missing flag, bad quoting), patch this skill per **Pipeline self-healing** above, and retry once. Do not silently leave a dead session in the workspace record.
-
----
-
-## State
-
-All state lives in `~/.local/share/darling/`. Read and write it directly with the Bash tool using the Python snippets below — never construct JSON by hand.
-
-```
-~/.local/share/darling/
-  workspaces/           one .json file per active workspace
-  knowledge_base/       archived completed workspaces
-  queue.json            pending tasks
-  repos.json            registered repo aliases
-```
-
-### Workspace record shape
-
-```json
-{
-  "name": "gh-142372-document-pycf",
-  "description": "#142372: Document PyCF_ALLOW_INCOMPLETE_INPUT",
-  "repo_path": "/Users/me/Python/cpython",
-  "branch": "gh-142372-document-pycf-allow-incomplete-input",
-  "worktree_path": "/Users/me/Python/cpython-worktrees/gh-142372",
-  "zmx_session": "gh-142372-document-pycf",
-  "pr_url": null,
-  "pr_number": null,
-  "pr_repo": null,
-  "created_at": "<ISO 8601 UTC>",
-  "updated_at": "<ISO 8601 UTC>",
-  "status": "active",
-  "notes": "",
-  "next_step": "<one-line description of the immediate next action — e.g. 'address review comment about thread safety on PR #142400', 'rebase onto main and push', 'wait for CI on push abc123'>",
-  "progress": "<free-form running summary of what's been done so far — append, don't replace>",
-  "tried": [
-    "<short note: approach attempted + outcome — e.g. 'tried reusing PyDict_GetItem; failed because of borrowed-ref lifetime issues'>"
-  ],
-  "blockers": "<current blocker, or null — e.g. 'waiting on @gpshead review', 'PEP 810 decision pending'>"
-}
-```
-
-The four narrative fields (`next_step`, `progress`, `tried`, `blockers`) collectively act as the workspace's working memory. They are what makes resuming a stale workspace cheap. Treat them as living text, not metadata to fill once and forget.
-
-- **`next_step`** — single sentence, the immediate next action. Always set. Refresh aggressively.
-- **`progress`** — free-form running summary; append new bullets/sentences as work advances. Reads like a short project log.
-- **`tried`** — list of one-liners, each: approach + outcome. Failed attempts go here so we don't redo them. Successful attempts can graduate into `progress`.
-- **`blockers`** — what's currently stopping forward motion (review, decision, dependency, environmental). `null` when unblocked.
-
-When unknown (just created, no plan yet), set `next_step` to something concrete like `"read the issue and decide on an approach"`; leave `progress`/`tried`/`blockers` empty/null until there's something real to record.
-
-### repos.json shape
-
-```json
-{ "repos": [{"alias": "cpython", "path": "/Users/me/Python/cpython"}] }
-```
-
-### queue.json shape
-
-```json
-{
-  "items": [
-    {
-      "id": "<8-char hex>",
-      "task_prompt": "...",
-      "workspace_name": "...",
-      "status": "pending",
-      "queued_at": "<ISO 8601 UTC>",
-      "processed_at": null,
-      "outcome": null
-    }
-  ]
-}
-```
-
----
-
-## Python snippets for state operations
-
-Use these exact snippets via the Bash tool. Substitute `<placeholders>` with real values.
-
-### Find a workspace by issue number
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
-ws = [json.loads(f.read_text()) for f in p.glob("*.json")]
-match = next((w for w in ws if "gh-<issue_number>" in w["branch"] or "#<issue_number>" in w.get("description", "")), None)
-print(json.dumps(match) if match else "null")
-EOF
-```
-
-### Read all workspaces
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
-ws = [json.loads(f.read_text()) for f in sorted(p.glob("*.json"))]
-print(json.dumps(ws, indent=2))
-EOF
-```
-
-### Write a workspace record
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-now = datetime.datetime.utcnow().isoformat() + "Z"
-record = {
-    "name": "<workspace_name>",
-    "description": "#<issue_number>: <issue_title>",
-    "repo_path": "<repo_path>",
-    "branch": "<branch>",
-    "worktree_path": "<worktree_path>",
-    "zmx_session": "<workspace_name>",
-    "pr_url": None,
-    "pr_number": None,
-    "pr_repo": None,
-    "created_at": now,
-    "updated_at": now,
-    "status": "active",
-    "notes": "",
-    "next_step": "<one-line next action — required>",
-    "progress": "",
-    "tried": [],
-    "blockers": None
-}
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-p.write_text(json.dumps(record, indent=2))
-print("written:", p)
-EOF
-```
-
-### Update workspace fields (e.g. `next_step`, `progress`, `tried`, `blockers`, `pr_url`)
-
-Use this whenever the conversation reveals new state worth persisting. Always touches `updated_at`.
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-record = json.loads(p.read_text())
-updates = {
-    # set only the fields that changed; e.g.
-    # "next_step": "rebase onto main and re-push after #148999 merges",
-    # "blockers": "waiting on @gpshead review of PR #148530",
-    # "pr_url": "https://github.com/python/cpython/pull/148530",
-    # "pr_number": 148530,
-    # "pr_repo": "python/cpython",
-}
-record.update(updates)
-record["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-p.write_text(json.dumps(record, indent=2))
-print("updated:", list(updates))
-EOF
-```
-
-### Append to `progress` (running log)
-
-Don't overwrite `progress` — append. Use this to add a dated bullet.
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-now = datetime.datetime.utcnow().isoformat() + "Z"
-date = now[:10]
-entry = "<short bullet — what just got done or learned>"
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-record = json.loads(p.read_text())
-prior = record.get("progress") or ""
-record["progress"] = (prior + ("\n" if prior else "") + f"- {date}: {entry}").strip()
-record["updated_at"] = now
-p.write_text(json.dumps(record, indent=2))
-print("appended progress")
-EOF
-```
-
-### Append to `tried` (failed/attempted approaches)
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-now = datetime.datetime.utcnow().isoformat() + "Z"
-entry = "<short: approach + outcome, e.g. 'monkey-patched _Py_Dealloc; SIGSEGV under free-threaded build'>"
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-record = json.loads(p.read_text())
-record.setdefault("tried", []).append(entry)
-record["updated_at"] = now
-p.write_text(json.dumps(record, indent=2))
-print("appended tried")
-EOF
-```
-
-### Delete a workspace record
-
-```bash
-python3 -c "
-import pathlib
-p = pathlib.Path('~/.local/share/darling/workspaces/<workspace_name>.json').expanduser()
-p.unlink()
-print('deleted:', p)
-"
-```
-
-### Archive a workspace to knowledge_base
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-src = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-record = json.loads(src.read_text())
-record["archived_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
-kb.mkdir(parents=True, exist_ok=True)
-ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-dest = kb / f"<workspace_name>-{ts}.json"
-dest.write_text(json.dumps(record, indent=2))
-print("archived to:", dest)
-EOF
-```
-
-### Read queue (pending items only)
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
-q = json.loads(p.read_text()) if p.exists() else {"items": []}
-pending = [i for i in q["items"] if i["status"] == "pending"]
-print(json.dumps(pending, indent=2))
-EOF
-```
-
-### Append item to queue
-
-```python
-python3 - << 'EOF'
-import json, pathlib, secrets, datetime
-p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
-q = json.loads(p.read_text()) if p.exists() else {"items": []}
-q["items"].append({
-    "id": secrets.token_hex(4),
-    "task_prompt": "<task_prompt>",
-    "workspace_name": "<workspace_name>",
-    "status": "pending",
-    "queued_at": datetime.datetime.utcnow().isoformat() + "Z",
-    "processed_at": None,
-    "outcome": None
-})
-p.write_text(json.dumps(q, indent=2))
-print("queued:", q["items"][-1]["id"])
-EOF
-```
-
-### Mark queue item done
-
-```python
-python3 - << 'EOF'
-import json, pathlib, datetime
-p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
-q = json.loads(p.read_text())
-item = next(i for i in q["items"] if i["id"] == "<item_id>")
-item["status"] = "done"
-item["processed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-item["outcome"] = "<outcome>"
-p.write_text(json.dumps(q, indent=2))
-print("done:", item["id"])
-EOF
-```
-
-### Read repos
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
-repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
-print(json.dumps(repos["repos"], indent=2))
-EOF
-```
-
-### Upsert repo
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
-repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
-repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
-repos["repos"].append({"alias": "<alias>", "path": "<path>"})
-p.write_text(json.dumps(repos, indent=2))
-print("upserted:", "<alias>")
-EOF
-```
-
-### Remove repo
-
-```python
-python3 - << 'EOF'
-import json, pathlib
-p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
-repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
-repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
-p.write_text(json.dumps(repos, indent=2))
-print("removed:", "<alias>")
-EOF
-```
-
-### Derive slug and names from issue title
-
-```python
-python3 - << 'EOF'
-import re
-title = "<issue_title>"
-issue_number = "<issue_number>"
-slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
-branch = f"gh-{issue_number}-{slug}"
-workspace_name = branch[:60]
-print(f"slug={slug}\nbranch={branch}\nworkspace_name={workspace_name}")
-EOF
-```
-
----
-
 ## Dispatch
 
 Match `$ARGUMENTS` to the first rule that applies:
@@ -786,7 +435,362 @@ Tell the user:
 
 ---
 
-## Execution narration
+## Invariants
+
+### Pipeline self-healing
+
+The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `~/.claude/commands/darling.md` before reporting back**. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
+
+When you patch the skill, finish the user's request first if you can, then surface a one-line note about what you changed.
+
+---
+
+### zmx session sanity check
+
+After every `zmx run` launch, verify the session is alive AND running the intended command. zmx silently accepts launches that exit immediately, so a "session created" message is not proof of success.
+
+Run this immediately after `zmx run`:
+
+```bash
+sleep 2
+zmx list --short | grep -qx "<workspace_name>" || echo "MISSING: session not in zmx list"
+zmx history <workspace_name> 2>&1 | tail -20
+```
+
+The history tail must show evidence the intended command is running:
+
+- For Claude launches: a Claude prompt box, "Working…", a tool call line, or the literal prompt text echoed.
+- For raw shell commands: the expected stdout/banner.
+
+If the tail shows a bare shell prompt, "Process exited", "command not found", or is empty after 2s, the launch failed. Surface the history to the user, kill the session with `zmx kill <workspace_name> --force`, fix the root cause (PATH, missing flag, bad quoting), patch this skill per **Pipeline self-healing** above, and retry once. Do not silently leave a dead session in the workspace record.
+
+---
+
+## State
+
+All state lives in `~/.local/share/darling/`. Read and write it directly with the Bash tool using the Python snippets below — never construct JSON by hand.
+
+```
+~/.local/share/darling/
+  workspaces/           one .json file per active workspace
+  knowledge_base/       archived completed workspaces
+  queue.json            pending tasks
+  repos.json            registered repo aliases
+```
+
+### Workspace record shape
+
+```json
+{
+  "name": "gh-142372-document-pycf",
+  "description": "#142372: Document PyCF_ALLOW_INCOMPLETE_INPUT",
+  "repo_path": "/Users/me/Python/cpython",
+  "branch": "gh-142372-document-pycf-allow-incomplete-input",
+  "worktree_path": "/Users/me/Python/cpython-worktrees/gh-142372",
+  "zmx_session": "gh-142372-document-pycf",
+  "pr_url": null,
+  "pr_number": null,
+  "pr_repo": null,
+  "created_at": "<ISO 8601 UTC>",
+  "updated_at": "<ISO 8601 UTC>",
+  "status": "active",
+  "notes": "",
+  "next_step": "<one-line description of the immediate next action — e.g. 'address review comment about thread safety on PR #142400', 'rebase onto main and push', 'wait for CI on push abc123'>",
+  "progress": "<free-form running summary of what's been done so far — append, don't replace>",
+  "tried": [
+    "<short note: approach attempted + outcome — e.g. 'tried reusing PyDict_GetItem; failed because of borrowed-ref lifetime issues'>"
+  ],
+  "blockers": "<current blocker, or null — e.g. 'waiting on @gpshead review', 'PEP 810 decision pending'>"
+}
+```
+
+The four narrative fields (`next_step`, `progress`, `tried`, `blockers`) collectively act as the workspace's working memory. They are what makes resuming a stale workspace cheap. Treat them as living text, not metadata to fill once and forget.
+
+- **`next_step`** — single sentence, the immediate next action. Always set. Refresh aggressively.
+- **`progress`** — free-form running summary; append new bullets/sentences as work advances. Reads like a short project log.
+- **`tried`** — list of one-liners, each: approach + outcome. Failed attempts go here so we don't redo them. Successful attempts can graduate into `progress`.
+- **`blockers`** — what's currently stopping forward motion (review, decision, dependency, environmental). `null` when unblocked.
+
+When unknown (just created, no plan yet), set `next_step` to something concrete like `"read the issue and decide on an approach"`; leave `progress`/`tried`/`blockers` empty/null until there's something real to record.
+
+### repos.json shape
+
+```json
+{ "repos": [{"alias": "cpython", "path": "/Users/me/Python/cpython"}] }
+```
+
+### queue.json shape
+
+```json
+{
+  "items": [
+    {
+      "id": "<8-char hex>",
+      "task_prompt": "...",
+      "workspace_name": "...",
+      "status": "pending",
+      "queued_at": "<ISO 8601 UTC>",
+      "processed_at": null,
+      "outcome": null
+    }
+  ]
+}
+```
+
+---
+
+## Python snippets for state operations
+
+Use these exact snippets via the Bash tool. Substitute `<placeholders>` with real values.
+
+### Find a workspace by issue number
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
+ws = [json.loads(f.read_text()) for f in p.glob("*.json")]
+match = next((w for w in ws if "gh-<issue_number>" in w["branch"] or "#<issue_number>" in w.get("description", "")), None)
+print(json.dumps(match) if match else "null")
+EOF
+```
+
+### Read all workspaces
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
+ws = [json.loads(f.read_text()) for f in sorted(p.glob("*.json"))]
+print(json.dumps(ws, indent=2))
+EOF
+```
+
+### Write a workspace record
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
+record = {
+    "name": "<workspace_name>",
+    "description": "#<issue_number>: <issue_title>",
+    "repo_path": "<repo_path>",
+    "branch": "<branch>",
+    "worktree_path": "<worktree_path>",
+    "zmx_session": "<workspace_name>",
+    "pr_url": None,
+    "pr_number": None,
+    "pr_repo": None,
+    "created_at": now,
+    "updated_at": now,
+    "status": "active",
+    "notes": "",
+    "next_step": "<one-line next action — required>",
+    "progress": "",
+    "tried": [],
+    "blockers": None
+}
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+p.write_text(json.dumps(record, indent=2))
+print("written:", p)
+EOF
+```
+
+### Update workspace fields (e.g. `next_step`, `progress`, `tried`, `blockers`, `pr_url`)
+
+Use this whenever the conversation reveals new state worth persisting. Always touches `updated_at`.
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+updates = {
+    # set only the fields that changed; e.g.
+    # "next_step": "rebase onto main and re-push after #148999 merges",
+    # "blockers": "waiting on @gpshead review of PR #148530",
+    # "pr_url": "https://github.com/python/cpython/pull/148530",
+    # "pr_number": 148530,
+    # "pr_repo": "python/cpython",
+}
+record.update(updates)
+record["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(record, indent=2))
+print("updated:", list(updates))
+EOF
+```
+
+### Append to `progress` (running log)
+
+Don't overwrite `progress` — append. Use this to add a dated bullet.
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
+date = now[:10]
+entry = "<short bullet — what just got done or learned>"
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+prior = record.get("progress") or ""
+record["progress"] = (prior + ("\n" if prior else "") + f"- {date}: {entry}").strip()
+record["updated_at"] = now
+p.write_text(json.dumps(record, indent=2))
+print("appended progress")
+EOF
+```
+
+### Append to `tried` (failed/attempted approaches)
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+now = datetime.datetime.utcnow().isoformat() + "Z"
+entry = "<short: approach + outcome, e.g. 'monkey-patched _Py_Dealloc; SIGSEGV under free-threaded build'>"
+p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(p.read_text())
+record.setdefault("tried", []).append(entry)
+record["updated_at"] = now
+p.write_text(json.dumps(record, indent=2))
+print("appended tried")
+EOF
+```
+
+### Delete a workspace record
+
+```bash
+python3 -c "
+import pathlib
+p = pathlib.Path('~/.local/share/darling/workspaces/<workspace_name>.json').expanduser()
+p.unlink()
+print('deleted:', p)
+"
+```
+
+### Archive a workspace to knowledge_base
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+src = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+record = json.loads(src.read_text())
+record["archived_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
+kb.mkdir(parents=True, exist_ok=True)
+ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+dest = kb / f"<workspace_name>-{ts}.json"
+dest.write_text(json.dumps(record, indent=2))
+print("archived to:", dest)
+EOF
+```
+
+### Read queue (pending items only)
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text()) if p.exists() else {"items": []}
+pending = [i for i in q["items"] if i["status"] == "pending"]
+print(json.dumps(pending, indent=2))
+EOF
+```
+
+### Append item to queue
+
+```python
+python3 - << 'EOF'
+import json, pathlib, secrets, datetime
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text()) if p.exists() else {"items": []}
+q["items"].append({
+    "id": secrets.token_hex(4),
+    "task_prompt": "<task_prompt>",
+    "workspace_name": "<workspace_name>",
+    "status": "pending",
+    "queued_at": datetime.datetime.utcnow().isoformat() + "Z",
+    "processed_at": None,
+    "outcome": None
+})
+p.write_text(json.dumps(q, indent=2))
+print("queued:", q["items"][-1]["id"])
+EOF
+```
+
+### Mark queue item done
+
+```python
+python3 - << 'EOF'
+import json, pathlib, datetime
+p = pathlib.Path("~/.local/share/darling/queue.json").expanduser()
+q = json.loads(p.read_text())
+item = next(i for i in q["items"] if i["id"] == "<item_id>")
+item["status"] = "done"
+item["processed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+item["outcome"] = "<outcome>"
+p.write_text(json.dumps(q, indent=2))
+print("done:", item["id"])
+EOF
+```
+
+### Read repos
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+print(json.dumps(repos["repos"], indent=2))
+EOF
+```
+
+### Upsert repo
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
+repos["repos"].append({"alias": "<alias>", "path": "<path>"})
+p.write_text(json.dumps(repos, indent=2))
+print("upserted:", "<alias>")
+EOF
+```
+
+### Remove repo
+
+```python
+python3 - << 'EOF'
+import json, pathlib
+p = pathlib.Path("~/.local/share/darling/repos.json").expanduser()
+repos = json.loads(p.read_text()) if p.exists() else {"repos": []}
+repos["repos"] = [r for r in repos["repos"] if r["alias"] != "<alias>"]
+p.write_text(json.dumps(repos, indent=2))
+print("removed:", "<alias>")
+EOF
+```
+
+### Derive slug and names from issue title
+
+```python
+python3 - << 'EOF'
+import re
+title = "<issue_title>"
+issue_number = "<issue_number>"
+slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
+branch = f"gh-{issue_number}-{slug}"
+workspace_name = branch[:60]
+print(f"slug={slug}\nbranch={branch}\nworkspace_name={workspace_name}")
+EOF
+```
+
+---
+
+## Conventions
+
+### Execution narration
 
 Before each action, output one line:
 ```
@@ -796,13 +800,13 @@ After it completes, output the key result in one line.
 
 ---
 
-## Worktree conventions
+### Worktree conventions
 
 - Branch: `gh-<issue_number>-<slug>`
 - Worktree directory: `<repo_parent>/<repo_name>-worktrees/gh-<issue_number>/`
 - Workspace name == branch name (≤ 60 chars)
 
-## Deleting a workspace
+### Deleting a workspace
 
 1. `zmx kill <zmx_session> --force` (ignore errors)
 2. `git -C <repo_path> worktree remove --force <worktree_path>`
