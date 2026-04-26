@@ -8,35 +8,16 @@ Invoke `/darling` from Claude with an issue number or GitHub URL to open a works
 
 ## Install
 
+Darling ships as an **agent skill** (not a slash command), so it autoloads in any compatible agent (Claude Code, Copilot CLI, etc.) based on the `description` field in `SKILL.md` — no `CLAUDE.md` glue required.
+
 ```bash
-git clone https://github.com/johnslavik/darling
-ln -sf ~/OSS/darling/.claude/commands/darling.md ~/.claude/commands/darling.md
+git clone https://github.com/johnslavik/darling ~/OSS/darling
+ln -sf ~/OSS/darling/.claude/skills/darling ~/.claude/skills/darling
 ```
 
-The symlink makes `/darling` available globally in Claude Code. Since it's a symlink, edits to the skill file in the repo take effect immediately.
+The symlink installs the skill globally. Because it's a symlink to the repo, edits to `SKILL.md` take effect immediately.
 
-Then add the following to `~/.claude/CLAUDE.md` (create the file if it doesn't exist) so Claude knows when to invoke darling automatically — without needing the `/darling` prefix:
-
-```markdown
-## Darling workspace manager
-
-Darling is a workspace manager for development tasks. Its skill is installed at `~/.claude/commands/darling.md`.
-
-Invoke the darling skill whenever the user's intent is to **start, resume, manage, or take inventory of in-flight development work** — regardless of whether they use the word "darling" or the `/darling` command. Darling owns the source of truth for active workspaces, queued tasks, and registered repos; questions about that state must go through it, not through ad-hoc `git worktree`/`gh` snooping.
-
-Examples that should trigger it:
-
-- "work on gh-142372" → `/darling 142372`
-- "let's fix that cpython issue" → `/darling <free-text>`
-- "open a workspace for the devguide ticket" → `/darling <ref>`
-- "darling, 142372" → `/darling 142372`
-- **Status / inventory questions about current work** — e.g. "what are we working on", "what's the status", "list my workspaces", "what's in flight", "what's pending", "anything queued" → `/darling` (empty args = status) or `/darling list` / `/darling queue`
-- any message where the user wants to begin, resume, or check in on concrete work tied to a repo or issue
-
-When invoked this way, treat the issue reference (number, URL, or free-text description) as `$ARGUMENTS` and follow the skill instructions exactly as if the user had typed `/darling <ref>`. For status questions, pass empty `$ARGUMENTS` and follow the **status** operation.
-
-Do **not** trigger darling for general questions about an issue ("what does gh-142372 say?"), code review of someone else's PR, or pure how-does-X-work questions where the user isn't asking about their own in-flight work.
-```
+To verify autoload, start a fresh agent session and ask "what are we working on" — the agent should pick up darling automatically. Explicit invocation also works (`/darling`, "darling, …", etc.) for any agent that surfaces skills via slash commands.
 
 ## Requirements
 
@@ -45,7 +26,7 @@ Do **not** trigger darling for general questions about an issue ("what does gh-1
 
 ## Usage
 
-With the CLAUDE.md entry in place, you can invoke darling naturally:
+Darling autoloads from its skill description, so you can invoke it naturally:
 
 ```
 work on gh-142372
@@ -119,4 +100,4 @@ All state is JSON files in `~/.local/share/darling/` — no database, safe to sy
 
 ## Skill source
 
-The skill lives at `.claude/commands/darling.md`. Edit it there — changes are live immediately via the symlink.
+The skill lives at `.claude/skills/darling/SKILL.md`. Edit it there — changes are live immediately via the symlink.
