@@ -157,8 +157,8 @@ The user is not a casual visitor on these issues; almost any task they describe 
 
 Search in this order — stop at the first source that yields a confident match:
 
-1. **Active workspaces** — read `~/.local/share/darling/workspaces/*.json`, score against `description`, `branch`, `name`, `notes`, `progress`.
-2. **Knowledge base** — read `~/.local/share/darling/knowledge_base/*.json` for archived workspaces (recent finished work often comes back).
+1. **Active workspaces** — iterate both `~/.local/share/darling/private/workspaces/*.json` and `~/.local/share/darling/public/workspaces/*.json`, score against `description`, `branch`, `name`, `notes`, `progress`.
+2. **Knowledge base** — iterate both `private/knowledge_base/` and `public/knowledge_base/` for archived workspaces (recent finished work often comes back).
 3. **GitHub issues involving the user** — query each of these and merge:
    - `gh issue list --repo <owner>/<repo> --assignee @me --state all --search "<terms>" --limit 20 --json number,title,state,updatedAt,url,author`
    - `gh issue list --repo <owner>/<repo> --author @me --state all --search "<terms>" --limit 20 --json number,title,state,updatedAt,url,author`
@@ -174,6 +174,10 @@ Run this resolver script — it returns ranked candidates as JSON:
 python3 - << 'EOF'
 import json, pathlib, re, subprocess, sys
 
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+WS_DIRS = (ROOT/"private/workspaces", ROOT/"public/workspaces")
+KB_DIRS = (ROOT/"private/knowledge_base", ROOT/"public/knowledge_base")
+
 query = "<free_text>"
 terms = [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_.]+", query) if t.lower() not in {"work","on","the","a","an","fix","do","please","revamp","revamping","update","add","change","make","for","with","to","of"}]
 
@@ -188,17 +192,18 @@ def add(c):
     candidates.append(c)
     if "number" in c: seen_issue_nums.add(c["number"])
 
-# Active workspaces
-for f in pathlib.Path("~/.local/share/darling/workspaces/").expanduser().glob("*.json"):
-    w = json.loads(f.read_text())
-    haystack = " ".join(str(w.get(k, "") or "") for k in ("description","branch","notes","progress","next_step"))
-    s = score(haystack, terms)
-    if s: add({"source":"workspace","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"pr_url":w.get("pr_url"),"created_at":w.get("created_at"),"updated_at":w.get("updated_at")})
+# Active workspaces (both private + public)
+for d in WS_DIRS:
+    for f in d.glob("*.json"):
+        w = json.loads(f.read_text())
+        haystack = " ".join(str(w.get(k, "") or "") for k in ("description","branch","notes","progress","next_step"))
+        s = score(haystack, terms)
+        if s: add({"source":"workspace","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"pr_url":w.get("pr_url"),"created_at":w.get("created_at"),"updated_at":w.get("updated_at")})
 
-# Knowledge base
-kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
-if kb.exists():
-    for f in kb.glob("*.json"):
+# Knowledge base (both private + public)
+for d in KB_DIRS:
+    if not d.exists(): continue
+    for f in d.glob("*.json"):
         w = json.loads(f.read_text())
         s = score(w.get("description","") + " " + w.get("branch",""), terms)
         if s: add({"source":"knowledge_base","score":s,"name":w["name"],"description":w["description"],"branch":w["branch"],"archived_at":w.get("archived_at")})
@@ -310,9 +315,11 @@ import json, pathlib, re, subprocess, sys, datetime
 
 issue_number = "<issue_number>"
 
-# --- existing workspace? ---
-ws_dir = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
-all_ws = [json.loads(f.read_text()) for f in ws_dir.glob("*.json")]
+# --- existing workspace? (search both private + public) ---
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+all_ws = []
+for d in (ROOT/"private/workspaces", ROOT/"public/workspaces"):
+    all_ws.extend(json.loads(f.read_text()) for f in d.glob("*.json"))
 existing = next((w for w in all_ws if f"gh-{issue_number}" in w["branch"] or f"#{issue_number}" in w.get("description", "")), None)
 
 # --- repo path ---
@@ -486,10 +493,27 @@ All state lives in `~/.local/share/darling/`. Read and write it directly with th
 
 ```
 ~/.local/share/darling/
-  workspaces/           one .json file per active workspace
-  knowledge_base/       archived completed workspaces
-  queue.json            pending tasks
-  repos.json            registered repo aliases
+  config.json           visibility config: public_repo_path_prefixes
+  private/
+    workspaces/         active workspaces NOT classified public (default)
+    knowledge_base/     archived private workspaces
+  public/
+    workspaces/         active workspaces whose repo_path matches a public prefix
+    knowledge_base/     archived public workspaces
+  queue.json            pending tasks (private)
+  repos.json            registered repo aliases (private)
+```
+
+### Visibility split
+
+Workspace records are partitioned into `private/` and `public/` so the public tree can be tracked by yadm and committed to a public dotfiles repo while work records stay local. Classification is by `repo_path`: if it lives under any prefix in `config.json`'s `public_repo_path_prefixes`, the record goes under `public/`. Default is **private** (fail-closed) — anything not explicitly opted-in stays local.
+
+The classification is **path-based, not record-stored**: there is no `visibility` field on the record. The storage location IS the truth. Updates preserve the record's current location; only fresh writes run the classifier. To force a record private when its repo lives under a public prefix, just move the .json from `public/workspaces/` to `private/workspaces/` by hand — it stays moved.
+
+`config.json` shape:
+
+```json
+{ "public_repo_path_prefixes": ["~/Python/", "~/OSS/"] }
 ```
 
 ### Workspace record shape
@@ -557,14 +581,22 @@ When unknown (just created, no plan yet), set `next_step` to something concrete 
 
 Use these exact snippets via the Bash tool. Substitute `<placeholders>` with real values.
 
+Each snippet that reads workspaces iterates **both** `private/workspaces/` and `public/workspaces/`. Each snippet that writes a fresh record classifies via `config.json` (`public_repo_path_prefixes`) and routes to `public/` if the `repo_path` matches a prefix, else `private/` (fail-closed). Updates and archives **preserve the record's current location** — they look up where it already lives and write back there.
+
 ### Find a workspace by issue number
 
 ```python
 python3 - << 'EOF'
 import json, pathlib
-p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
-ws = [json.loads(f.read_text()) for f in p.glob("*.json")]
-match = next((w for w in ws if "gh-<issue_number>" in w["branch"] or "#<issue_number>" in w.get("description", "")), None)
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+issue = "<issue_number>"
+match = None
+for d in (ROOT/"private/workspaces", ROOT/"public/workspaces"):
+    for f in d.glob("*.json"):
+        w = json.loads(f.read_text())
+        if f"gh-{issue}" in w["branch"] or f"#{issue}" in w.get("description", ""):
+            match = w; break
+    if match: break
 print(json.dumps(match) if match else "null")
 EOF
 ```
@@ -574,17 +606,36 @@ EOF
 ```python
 python3 - << 'EOF'
 import json, pathlib
-p = pathlib.Path("~/.local/share/darling/workspaces/").expanduser()
-ws = [json.loads(f.read_text()) for f in sorted(p.glob("*.json"))]
-print(json.dumps(ws, indent=2))
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+files = sorted(
+    [f for d in (ROOT/"private/workspaces", ROOT/"public/workspaces") for f in d.glob("*.json")],
+    key=lambda p: p.name,
+)
+print(json.dumps([json.loads(f.read_text()) for f in files], indent=2))
 EOF
 ```
 
 ### Write a workspace record
 
+Routes to `public/workspaces/` or `private/workspaces/` based on `repo_path` classification.
+
 ```python
 python3 - << 'EOF'
 import json, pathlib, datetime
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+
+def is_public(repo_path):
+    cfg = json.loads((ROOT/"config.json").read_text()) if (ROOT/"config.json").exists() else {}
+    if not repo_path: return False
+    rp = pathlib.Path(repo_path).expanduser().resolve()
+    for prefix in cfg.get("public_repo_path_prefixes", []):
+        try:
+            base = pathlib.Path(prefix).expanduser().resolve()
+        except OSError:
+            continue
+        if rp == base or base in rp.parents: return True
+    return False
+
 now = datetime.datetime.utcnow().isoformat() + "Z"
 record = {
     "name": "<workspace_name>",
@@ -593,45 +644,43 @@ record = {
     "branch": "<branch>",
     "worktree_path": "<worktree_path>",
     "zmx_session": "<workspace_name>",
-    "pr_url": None,
-    "pr_number": None,
-    "pr_repo": None,
-    "created_at": now,
-    "updated_at": now,
-    "status": "active",
-    "notes": "",
+    "pr_url": None, "pr_number": None, "pr_repo": None,
+    "created_at": now, "updated_at": now,
+    "status": "active", "notes": "",
     "next_step": "<one-line next action — required>",
-    "progress": "",
-    "tried": [],
-    "blockers": None
+    "progress": "", "tried": [], "blockers": None,
 }
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-p.write_text(json.dumps(record, indent=2))
-print("written:", p)
+sub = "public" if is_public(record["repo_path"]) else "private"
+dest = ROOT / sub / "workspaces" / f"{record['name']}.json"
+dest.parent.mkdir(parents=True, exist_ok=True)
+dest.write_text(json.dumps(record, indent=2))
+print(f"written ({sub}):", dest)
 EOF
 ```
 
 ### Update workspace fields (e.g. `next_step`, `progress`, `tried`, `blockers`, `pr_url`)
 
-Use this whenever the conversation reveals new state worth persisting. Always touches `updated_at`.
+Use this whenever the conversation reveals new state worth persisting. Always touches `updated_at`. Preserves the record's current public/private location — it never re-classifies.
 
 ```python
 python3 - << 'EOF'
 import json, pathlib, datetime
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
-record = json.loads(p.read_text())
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+name = "<workspace_name>"
+p = next((d/f"{name}.json" for d in (ROOT/"private/workspaces", ROOT/"public/workspaces") if (d/f"{name}.json").exists()), None)
+if not p: raise SystemExit(f"no such workspace: {name}")
 updates = {
     # set only the fields that changed; e.g.
     # "next_step": "rebase onto main and re-push after #148999 merges",
     # "blockers": "waiting on @gpshead review of PR #148530",
     # "pr_url": "https://github.com/python/cpython/pull/148530",
-    # "pr_number": 148530,
-    # "pr_repo": "python/cpython",
+    # "pr_number": 148530, "pr_repo": "python/cpython",
 }
+record = json.loads(p.read_text())
 record.update(updates)
 record["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 p.write_text(json.dumps(record, indent=2))
-print("updated:", list(updates))
+print("updated:", list(updates), "→", p)
 EOF
 ```
 
@@ -642,13 +691,15 @@ Don't overwrite `progress` — append. Use this to add a dated bullet.
 ```python
 python3 - << 'EOF'
 import json, pathlib, datetime
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+name = "<workspace_name>"
+p = next((d/f"{name}.json" for d in (ROOT/"private/workspaces", ROOT/"public/workspaces") if (d/f"{name}.json").exists()), None)
+if not p: raise SystemExit(f"no such workspace: {name}")
 now = datetime.datetime.utcnow().isoformat() + "Z"
-date = now[:10]
 entry = "<short bullet — what just got done or learned>"
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
 record = json.loads(p.read_text())
 prior = record.get("progress") or ""
-record["progress"] = (prior + ("\n" if prior else "") + f"- {date}: {entry}").strip()
+record["progress"] = (prior + ("\n" if prior else "") + f"- {now[:10]}: {entry}").strip()
 record["updated_at"] = now
 p.write_text(json.dumps(record, indent=2))
 print("appended progress")
@@ -660,12 +711,13 @@ EOF
 ```python
 python3 - << 'EOF'
 import json, pathlib, datetime
-now = datetime.datetime.utcnow().isoformat() + "Z"
-entry = "<short: approach + outcome, e.g. 'monkey-patched _Py_Dealloc; SIGSEGV under free-threaded build'>"
-p = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+name = "<workspace_name>"
+p = next((d/f"{name}.json" for d in (ROOT/"private/workspaces", ROOT/"public/workspaces") if (d/f"{name}.json").exists()), None)
+if not p: raise SystemExit(f"no such workspace: {name}")
 record = json.loads(p.read_text())
-record.setdefault("tried", []).append(entry)
-record["updated_at"] = now
+record.setdefault("tried", []).append("<short: approach + outcome>")
+record["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 p.write_text(json.dumps(record, indent=2))
 print("appended tried")
 EOF
@@ -676,26 +728,36 @@ EOF
 ```bash
 python3 -c "
 import pathlib
-p = pathlib.Path('~/.local/share/darling/workspaces/<workspace_name>.json').expanduser()
-p.unlink()
-print('deleted:', p)
+ROOT = pathlib.Path('~/.local/share/darling/').expanduser()
+name = '<workspace_name>'
+for d in (ROOT/'private/workspaces', ROOT/'public/workspaces'):
+    p = d/f'{name}.json'
+    if p.exists():
+        p.unlink(); print('deleted:', p); break
+else:
+    print('not found')
 "
 ```
 
 ### Archive a workspace to knowledge_base
 
+Routes to the `knowledge_base/` matching the workspace's current visibility.
+
 ```python
 python3 - << 'EOF'
 import json, pathlib, datetime
-src = pathlib.Path("~/.local/share/darling/workspaces/<workspace_name>.json").expanduser()
+ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
+name = "<workspace_name>"
+src = next((d/f"{name}.json" for d in (ROOT/"private/workspaces", ROOT/"public/workspaces") if (d/f"{name}.json").exists()), None)
+if not src: raise SystemExit(f"no such workspace: {name}")
 record = json.loads(src.read_text())
 record["archived_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-kb = pathlib.Path("~/.local/share/darling/knowledge_base/").expanduser()
-kb.mkdir(parents=True, exist_ok=True)
+sub = src.parent.parent.name  # 'public' or 'private'
 ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-dest = kb / f"<workspace_name>-{ts}.json"
+dest = ROOT / sub / "knowledge_base" / f"{name}-{ts}.json"
+dest.parent.mkdir(parents=True, exist_ok=True)
 dest.write_text(json.dumps(record, indent=2))
-print("archived to:", dest)
+print(f"archived ({sub}):", dest)
 EOF
 ```
 
