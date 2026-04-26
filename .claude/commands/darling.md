@@ -145,11 +145,17 @@ To append to queue.json: read it (or init empty), push a new item with a random 
 
 ### workspace-for-issue
 
-#### Step 1 — extract issue number
+#### Step 1 — extract issue number and extra instructions
 
+Parse `$ARGUMENTS` into two parts:
+- **issue_ref**: the leading token(s) that identify the issue — a bare number, `gh-NNNNNN`, or a GitHub URL ending in `/issues/NNNNNN`
+- **extra_instructions**: everything after the issue ref (may be empty)
+
+Extraction rules:
 - Bare number `142372` → issue_number = `142372`
 - `gh-142372` or `gh-142372-some-slug` → issue_number = `142372`
 - GitHub URL → extract the number after `/issues/`
+- Any text following the issue ref → extra_instructions (preserve verbatim)
 
 #### Step 2 — check for existing workspace
 
@@ -170,7 +176,7 @@ If found: show the workspace details and stop — do not create a new one.
 
 #### Step 4 — fetch issue details
 
-Run: `gh issue view <issue_number> --repo <owner>/<repo_name> --json title,number`
+Run: `gh issue view <issue_number> --repo <owner>/<repo_name> --json title,number,body`
 
 Derive `owner/repo_name` from the repo path:
 - Run `git remote get-url origin` in the repo directory.
@@ -201,6 +207,28 @@ zmx attach <workspace_name>
 (run this command with cwd set to the worktree_path)
 
 Write the workspace JSON to `~/.local/share/darling/workspaces/<workspace_name>.json`.
+
+#### Step 7 — launch Claude in the session
+
+Compose a task prompt string. The prompt must be self-contained — the Claude instance receiving it has no memory of this conversation. Include:
+
+1. The task: `"Work on issue #<number>: <title>."`
+2. Issue body verbatim (so Claude has full context)
+3. Workspace context: repo path, branch name, worktree path
+4. Extra instructions if any (verbatim, high priority — place these last so they override)
+5. A closing line: `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+
+Write the prompt to a temp file to avoid shell-escaping issues, then pipe it into Claude running inside the session:
+
+```bash
+cat > /tmp/darling-<issue_number>.txt << 'DARLING_EOF'
+<prompt content>
+DARLING_EOF
+
+zmx run -d <workspace_name> sh -c 'claude < /tmp/darling-<issue_number>.txt'
+```
+
+Note: insert any desired permission flags between `claude` and `<` — use whatever the project or user has configured.
 
 **Do not ask for confirmation before creating.**
 
