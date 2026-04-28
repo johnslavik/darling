@@ -1,6 +1,6 @@
 ---
 name: darling
-description: Track in-flight development tasks across git worktrees and ZMX terminal sessions. Use when the user wants to start, resume, manage, or take inventory of in-flight work. STRONG triggers (invoke immediately, do NOT ask clarifying questions first — darling's resolve-task-description handles ambiguity by searching workspaces, knowledge base, and the user's GitHub issues): "let's work on X", "let's fix X", "let's revamp X", "let's continue X", "work on gh-NNNNNN", any GitHub issue number/URL, "open a workspace for <ref>", "darling, ...", or any free-text reference to a task by symbol/phrase ("the lazy modules thing", "the Counter typo"). Inventory triggers: "what are we working on", "what's the status", "where are we", "list my workspaces", "what's pending", "anything queued". Asking the user to repeat what darling already knows (which repo, which branch, what the task means) is a failure mode — go to darling first. Do NOT trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
+description: Track in-flight development tasks across git worktrees and ZMX terminal sessions. Use when the user wants to start, resume, manage, or take inventory of in-flight work. STRONG triggers (invoke immediately, do NOT ask clarifying questions first — darling's resolve-task-description handles ambiguity by searching workspaces, knowledge base, and the user's GitHub issues): "let's work on X", "let's fix X", "let's revamp X", "let's continue X", "work on gh-NNNNNN", any GitHub issue number/URL, any Jira issue key (e.g. `PROJ-1234`) or Atlassian browse URL, "open a workspace for <ref>", "darling, ...", or any free-text reference to a task by symbol/phrase ("the lazy modules thing", "the Counter typo"). Inventory triggers: "what are we working on", "what's the status", "where are we", "list my workspaces", "what's pending", "anything queued". Asking the user to repeat what darling already knows (which repo, which branch, what the task means) is a failure mode — go to darling first. Do NOT trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
 ---
 
 You are the darling workspace manager. Darling tracks git worktrees + ZMX terminal sessions for in-flight development tasks.
@@ -9,7 +9,8 @@ You are the darling workspace manager. Darling tracks git worktrees + ZMX termin
 
 Treat the user's message as the invocation. Extract the **arguments** (referred to below as `$ARGUMENTS`) as follows:
 
-- A bare number, `gh-NNNNNN`, or `https://github.com/.../issues/NNNNNN` → the issue reference.
+- A bare number, `gh-NNNNNN`, or `https://github.com/.../issues/NNNNNN` → GitHub issue reference.
+- A Jira issue key (`[A-Z]+-\d+`, e.g. `PROJ-1234`) or `https://*.atlassian.net/browse/KEY-NNN` → Jira issue reference.
 - A subcommand like `check`, `list`, `queue`, `repos`, `next`, `register …`, `progress …`, `tried …`, `blocker …`, `next <ws> <text…>` → that subcommand and its tail.
 - Free-text task description ("work on X", "fix Y", a symbol/phrase) → pass through to **resolve-task-description**.
 - Status / inventory questions ("what are we working on", "status", "what's in flight", etc.) → empty `$ARGUMENTS` (run **status**).
@@ -36,7 +37,7 @@ Match `$ARGUMENTS` to the first rule that applies:
 | `blocker <workspace_or_issue> <text or "none">` | **set-blocker** |
 | `register <alias> <path>` | **register-repo** |
 | `unregister <alias>` | **unregister-repo** |
-| bare number, `gh-NNNNNN`, or `https://github.com/.../issues/NNNNNN` | **workspace-for-issue** |
+| bare number, `gh-NNNNNN`, GitHub issue URL, Jira key (`PROJ-NNN`), or Atlassian browse URL | **workspace-for-issue** |
 | free-text task description ("work on X", "fix Y", a symbol/phrase) | **resolve-task-description** |
 | anything else | ask the user what they meant |
 
@@ -96,15 +97,22 @@ Parse `alias` from `$ARGUMENTS`. Run the **Remove repo** snippet.
 
 ### check-prs
 
-Run **Read all workspaces**. For each workspace, check both the PR (if any) and the underlying issue. If either is terminal, the workspace must be cleaned up — closed work has no in-flight workspace.
+Run **Read all workspaces**. For each workspace, check both the PR/MR (if any) and the underlying issue. If either is terminal, the workspace must be cleaned up — closed work has no in-flight workspace.
 
-1. **PR check** — for each workspace with a non-null `pr_url`:
-   - Parse owner/repo/number from the URL.
-   - Run `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt`.
-   - If `state` is `MERGED` or `CLOSED`: queue cleanup (see below).
-2. **Issue check** — for each workspace, derive the issue number from `branch` (`gh-NNNNNN-...`) and the repo from `repo_path`'s `origin` remote:
-   - Run `gh issue view <number> --repo <owner>/<repo> --json state,closedAt`.
-   - If `state` is `CLOSED` AND the workspace has no open PR linked: queue cleanup.
+The check tool depends on the workspace's `tracker`:
+
+| Tracker | PR/MR check | Issue check |
+|---|---|---|
+| `github` | `gh pr view <number> --repo <owner>/<repo> --json state,mergedAt` | `gh issue view <number> --repo <owner>/<repo> --json state,closedAt` |
+| `jira` | `glab mr view <number>` if `pr_url` is a GitLab MR; else skip with a one-line note | Jira MCP tool `mcp__claude_ai_Atlassian__getJiraIssue` and read `status.statusCategory.key` (`done` ⇒ closed) |
+
+For workspaces without a `tracker` field (legacy records), assume `github`.
+
+1. **PR/MR check** — for each workspace with a non-null `pr_url`:
+   - Parse the URL and run the tracker-appropriate command above.
+   - If GitHub `state` is `MERGED` or `CLOSED`, or GitLab MR `state` is `merged` or `closed`: queue cleanup (see below).
+2. **Issue check** — derive issue id from `issue_id` (or fall back to parsing the branch prefix), then run the tracker-appropriate command above:
+   - If the issue is closed/done AND the workspace has no open PR/MR linked: queue cleanup.
 
 Cleanup queue prompt:
 
@@ -293,34 +301,58 @@ After the user confirms, route to **workspace-for-issue** with the chosen issue 
 
 ### workspace-for-issue
 
-#### Extract — issue number and extra instructions
+#### Issue tracker abstraction
+
+Darling supports two issue trackers. The shape of every record (branch, worktree, workspace name) is the same; only the **canonical issue id** and how we **fetch issue metadata** differ.
+
+| Tracker | Issue ID examples | Branch / workspace prefix | Fetch via |
+|---|---|---|---|
+| `github` | `gh-142372` | `gh-<num>-<slug>` | `gh issue view <num> --repo <owner>/<repo> --json title,number,body` |
+| `jira` | `PROJ-1234` | `<KEY>-<slug>` | `mcp__claude_ai_Atlassian__getJiraIssue` (Jira MCP tool) |
+
+The branch prefix matters because some Jira-tracked repos enforce commit-message regexes like `^[A-Z]+-\d+ …` via server-side hooks, so the issue key must appear at the start of the branch (and squash commit) — a `gh-` prefix won't pass those hooks.
+
+This table is the extension point for new trackers. Adding YouTrack, Linear, Bugzilla, etc. is just another row: pick an `issue_id` shape that's distinguishable from the existing ones and a fetch tool (typically an MCP server). The rest of darling — branch derivation, worktree paths, workspace records, ZMX launch — already works generically off `tracker` + `issue_id`.
+
+#### Extract — issue ref and extra instructions
 
 Parse `$ARGUMENTS` into two parts:
-- **issue_ref**: the leading token(s) that identify the issue — a bare number, `gh-NNNNNN`, or a GitHub URL ending in `/issues/NNNNNN`
+- **issue_ref**: the leading token(s) that identify the issue — a bare number, `gh-NNNNNN`, a GitHub issues URL, a Jira key like `PROJ-1234`, or an Atlassian `browse/KEY-NNN` URL
 - **extra_instructions**: everything after the issue ref (may be empty)
 
 Extraction rules:
-- Bare number `142372` → issue_number = `142372`
-- `gh-142372` or `gh-142372-some-slug` → issue_number = `142372`
-- GitHub URL → extract the number after `/issues/`
+- Bare number `142372` → tracker = `github`, issue_id = `gh-142372`
+- `gh-142372` or `gh-142372-some-slug` → tracker = `github`, issue_id = `gh-142372`
+- GitHub issues URL → tracker = `github`, issue_id = `gh-<num>`
+- Jira key matching `^[A-Z]+-\d+$` (e.g. `PROJ-1234`) → tracker = `jira`, issue_id = the key as-is
+- Atlassian browse URL ending `/browse/KEY-NNN` → tracker = `jira`, issue_id = `KEY-NNN`
 - Any text following the issue ref → extra_instructions (preserve verbatim)
 
-#### Plan — resolve everything in one shot
+#### Plan — phase 1: structural fields
 
-Run this script. It outputs a JSON plan with all values needed to decide what to do next.
+Determine tracker and issue id from the extracted ref, then run this script. It outputs a structural plan WITHOUT issue title/body — the agent fetches those in phase 2 (different tool per tracker).
 
 ```python
 python3 - << 'PLAN_EOF'
 import json, pathlib, re, subprocess, sys, datetime
 
-issue_number = "<issue_number>"
+# Inputs the agent fills in from the Extract step:
+tracker = "<github|jira>"
+issue_id = "<canonical id; gh-NNNN for github or KEY-NNN for jira>"
 
 # --- existing workspace? (search both private + public) ---
 ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
 all_ws = []
 for d in (ROOT/"private/workspaces", ROOT/"public/workspaces"):
     all_ws.extend(json.loads(f.read_text()) for f in d.glob("*.json"))
-existing = next((w for w in all_ws if f"gh-{issue_number}" in w["branch"] or f"#{issue_number}" in w.get("description", "")), None)
+# Match by issue_id prefix in branch, or by description starting with issue_id (handles legacy "#NNN: ..." records too)
+def _match(w):
+    b = w.get("branch","")
+    desc = w.get("description","")
+    if b == issue_id or b.startswith(issue_id + "-"): return True
+    if desc.startswith(issue_id + ":") or desc.startswith(f"#{issue_id.removeprefix('gh-')}:"): return True
+    return False
+existing = next((w for w in all_ws if _match(w)), None)
 
 # --- repo path ---
 r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
@@ -337,44 +369,39 @@ else:
         print(json.dumps({"error": "cannot resolve repo", "repos": repos}))
         sys.exit(1)
 
-# --- remote → owner/repo ---
+# --- remote → owner/repo + repo_name (works for github.com, gitlab.*, bitbucket.org) ---
 r2 = subprocess.run(["git", "-C", repo_path, "remote", "get-url", "origin"], capture_output=True, text=True)
 remote = r2.stdout.strip()
-m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", remote)
-owner, repo_name = (m.group(1), m.group(2)) if m else ("", "")
-
-# --- fetch issue ---
-if existing:
-    issue = {"title": existing["description"].split(": ", 1)[-1], "number": int(issue_number), "body": ""}
+m_gh = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", remote)
+m_any = re.search(r"[:/]([^/]+)/([^/.]+?)(?:\.git)?$", remote)
+if m_gh:
+    owner, repo_name = m_gh.group(1), m_gh.group(2)
+elif m_any:
+    owner, repo_name = m_any.group(1), m_any.group(2)
 else:
-    r3 = subprocess.run(
-        ["gh", "issue", "view", issue_number, "--repo", f"{owner}/{repo_name}", "--json", "title,number,body"],
-        capture_output=True, text=True)
-    issue = json.loads(r3.stdout) if r3.returncode == 0 else {"title": "", "number": int(issue_number), "body": ""}
-    errors = [] if r3.returncode == 0 else [r3.stderr.strip()]
+    owner, repo_name = "", pathlib.Path(repo_path).name
 
-# --- derive names ---
-slug = re.sub(r"[^a-z0-9]+", "-", issue["title"].lower()).strip("-")[:50]
-branch = existing["branch"] if existing else f"gh-{issue_number}-{slug}"
-workspace_name = branch[:60]
+# --- worktree + branch (slug filled in phase 2 after we know the title) ---
 repo_parent = str(pathlib.Path(repo_path).parent)
-worktree_path = existing["worktree_path"] if existing else f"{repo_parent}/{repo_name}-worktrees/gh-{issue_number}"
+worktree_path = existing["worktree_path"] if existing else f"{repo_parent}/{repo_name}-worktrees/{issue_id}"
+# branch / workspace_name are computed in phase 2 once title is known; reuse if existing
+branch = existing["branch"] if existing else None
+workspace_name = (existing.get("name") if existing else None) or (branch[:60] if branch else None)
 
 # --- zmx sessions ---
 r4 = subprocess.run(["zmx", "list", "--short"], capture_output=True, text=True)
 zmx_sessions = [l.strip() for l in r4.stdout.splitlines() if l.strip()]
-session_exists = workspace_name in zmx_sessions
+session_exists = bool(workspace_name) and workspace_name in zmx_sessions
 
 plan = {
     "action": "resume" if existing else "create",
-    "issue_number": issue_number,
-    "issue_title": issue["title"],
-    "issue_body": issue["body"],
+    "tracker": tracker,
+    "issue_id": issue_id,
     "repo_path": repo_path,
     "owner": owner,
     "repo_name": repo_name,
-    "branch": branch,
-    "workspace_name": workspace_name,
+    "branch": branch,           # null when creating; finalized in phase 2
+    "workspace_name": workspace_name,  # null when creating; finalized in phase 2
     "worktree_path": worktree_path,
     "existing_workspace": existing,
     "session_exists": session_exists,
@@ -386,7 +413,36 @@ print(json.dumps(plan, indent=2))
 PLAN_EOF
 ```
 
-Read the JSON output and proceed:
+#### Plan — phase 2: fetch issue title/body and finalize names
+
+Skip this phase when `action == "resume"` — the existing record already has everything you need.
+
+For `action == "create"`, fetch the issue's title and body using the right tool:
+
+- **`tracker == "github"`**: `gh issue view <num> --repo <owner>/<repo_name> --json title,number,body` (where `<num>` is `issue_id` with the `gh-` prefix stripped).
+- **`tracker == "jira"`**: call the Jira MCP tool `mcp__claude_ai_Atlassian__getJiraIssue` with `cloudId` set to the user's Atlassian site hostname (e.g. `<your-org>.atlassian.net`) and `issueIdOrKey = issue_id`. Read `summary` (use as title) and `description` (use as body, may need ADF→markdown conversion via `responseContentFormat: "markdown"`).
+
+Then derive the slug, branch, workspace_name:
+
+```python
+python3 - << 'EOF'
+import re
+title = "<issue_title>"
+issue_id = "<issue_id>"   # e.g. gh-142372 (github) or KEY-1234 (jira)
+slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
+branch = f"{issue_id}-{slug}"
+# Trim slug if needed so branch fits in 60 chars total
+if len(branch) > 60:
+    keep = 60 - len(issue_id) - 1
+    branch = f"{issue_id}-{slug[:keep]}".rstrip("-")
+workspace_name = branch
+print(f"slug={slug}\nbranch={branch}\nworkspace_name={workspace_name}")
+EOF
+```
+
+The description for the workspace record is `"<issue_id>: <title>"` — same format for both trackers (`gh-142372: Document PyCF...` or `KEY-1234: ...`).
+
+Now read the phase-1 plan plus the phase-2 fetch results and proceed:
 
 - **`action == "resume"` and `session_exists == true`**: run `zmx history <workspace_name> | tail -50` to check state.
   - **Claude actively running** (spinner like "Working…", a tool call line in flight) → tell user and stop. Do not interrupt.
@@ -399,8 +455,12 @@ Read the JSON output and proceed:
 
 For **create**:
 
+The default branch is not always `main` (older repos, GitLab forks, mirrors may use `master`). Detect it once:
+
 ```bash
-git -C <repo_path> worktree add -b <branch> <worktree_path> main
+DEFAULT_BRANCH=$(git -C <repo_path> symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+git -C <repo_path> worktree add -b <branch> <worktree_path> "$DEFAULT_BRANCH"
 ```
 
 Write the workspace record using the **Write a workspace record** snippet with values from the plan JSON. For `next_step` on a fresh workspace, default to `"read the issue and decide on an approach"` unless the user's `extra_instructions` already imply something more concrete (e.g. "fix the off-by-one in foo.c" → `next_step` = `"fix the off-by-one in foo.c"`).
@@ -418,18 +478,20 @@ Whether you just created the workspace, resumed it, or merely talked about it, e
 
 Compose a self-contained prompt (the receiving Claude has no memory of this conversation):
 
-1. `"Work on issue #<number>: <title>."`
+1. `"Work on <issue_id>: <title>."` — use the canonical id (e.g. `gh-142372`, `KEY-1234`). For GitHub, mention the issue URL; for Jira, mention the Atlassian browse URL (`https://<site>.atlassian.net/browse/<KEY>`).
 2. Issue body verbatim
-3. Workspace context: repo path, branch, worktree path
+3. Workspace context: repo path, branch, worktree path. For Jira-tracked work, also remind: commit messages must start with the Jira key (server-side hooks enforce this).
 4. Extra instructions verbatim (high priority — place last)
-5. **Ship-it block** — paste verbatim:
-   > "**Shipping is part of the job.** When you reach a meaningful checkpoint (compiles, tests pass, or the requested change is done), commit and push the topic branch — do not end the session with unpushed work. Follow the project's contribution workflow as documented in its CLAUDE.md / CLAUDE.local.md / CONTRIBUTING for the exact remote and commit style. Never force-push a published branch.
+5. **Ship-it block** — paste verbatim (the project's CLAUDE.md / CLAUDE.local.md may relax these defaults; if it does, the agent should follow the project file):
+   > "**Shipping is part of the job.** When you reach a meaningful checkpoint (compiles, tests pass, or the requested change is done), commit and push the topic branch — do not end the session with unpushed work. Follow the project's contribution workflow as documented in its CLAUDE.md / CLAUDE.local.md / CONTRIBUTING for the exact remote, commit-message style, and any tracker-specific rules (e.g. commit-message regex requirements for Jira-tracked repos). Never force-push a published branch.
    >
-   > **Do NOT open or create pull requests.** Never run `gh pr create` or any equivalent. If a PR already exists for this branch, pushing updates it — that's fine. If no PR exists, leave it that way; the user will open the PR themselves. Only open a PR if the user has explicitly asked you to in this session's instructions.
+   > **Do NOT open or create pull requests / merge requests by default.** Never run `gh pr create`, `glab mr create`, or any equivalent. If a PR/MR already exists for this branch, pushing updates it — that's fine. If none exists, leave it that way; the user will open it themselves. The project's CLAUDE.md may explicitly authorize draft MR/PR creation — only then may you create one, and only as a draft.
    >
-   > End by reporting the commit SHA and (if a PR already existed) the PR URL."
+   > End by reporting the commit SHA and (if a PR/MR exists) its URL plus state (draft / ready)."
 6. **Repo-specific skill block** — see *Repo-specific skill injection* below. If the worktree is a known repo (cpython today), inject the matching paragraph verbatim.
-7. `"Begin immediately. Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions before starting."`
+7. **Plan-first instruction** — paste verbatim:
+   > "**Before making any changes, invoke `/plan` to enter plan mode.** Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions, scan the relevant code, and produce a written plan that covers every acceptance criterion in the issue body. Surface assumptions, dependencies on other tickets, and any risk areas. Once the plan is concrete and you're confident it's complete, exit plan mode and execute it. Plan-then-execute every meaningful sub-task — don't sprawl into changes without a current written plan."
+8. `"Begin immediately."`
 
 ##### Repo-specific skill injection
 
@@ -442,6 +504,8 @@ Detect the repo by looking at all of: `repo_name` (from origin remote), `worktre
 | `repo_name == "cpython"` OR upstream/origin contains `python/cpython` OR worktree path matches `*/cpython*` | **"This is a CPython worktree — CPython has strong, codified contribution conventions. Before doing anything else, invoke the `cpython:dev` skill: it orients you on the codebase and pulls in `cpython:build` (compile + tests via `./configure` and `make`, NOT pytest), `cpython:style` (PEP 7/8, patchcheck, the no-type-annotations-in-Lib rule), `cpython:docs` (NEWS entries, versionadded markers, .rst docs), and `cpython:jit` as your workflow needs them. Also follow `cpython-workflow` for branch/commit/issue conventions. These skills are non-optional for CPython work — using them is part of the task, not an extra step."** |
 
 Add a row when a new repo gets its own skill family. Until a repo is in this table, skip step 6 — don't invent skill names.
+
+Note that the prompt now has 8 steps, not 7: step 7 is the **plan-first instruction**, step 8 is `"Begin immediately."` Don't drop step 7 — making the agent invoke `/plan` first is non-optional.
 
 Write to temp file and launch entirely in the background — never call `zmx attach` (interactive, leaks to caller's terminal):
 
@@ -457,20 +521,39 @@ zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "
 
 **Now run the zmx session sanity check** (see top of file) to confirm the session is alive AND Claude is actually running. Do not skip this. Only proceed to opening the Ghostty window if the check passes.
 
-#### Open a Ghostty window attached to the session
+#### Open a Ghostty tab attached to the session
 
-After delegation, open a new Ghostty window attached to the session so the user can watch.
+After delegation, open a new Ghostty **tab** in the existing window (not a new window) so the user can watch without their workspace getting cluttered with one window per agent.
 
-Ghostty's `-e` runs the command without a login shell, so `$PATH` is bare and `zmx` is not found — the window flashes "Process exited". Wrap in a login shell so `~/.zshrc`/`~/.bash_profile` populate `PATH`.
-
-`-e` takes the executable and its args as **separate** tokens — quoting them all as one string makes `open` pass it as a single argv[0], which `login` then treats as a username (`login: bash -lc '...': No such file or directory`). Split into individual `--args` tokens:
+macOS `open -na Ghostty.app` always spawns a new application window — there's no `+new-tab` action and Ghostty's CLI doesn't accept tab-creation flags on macOS. Drive it through AppleScript instead: activate the app, send Cmd+T (or Cmd+N if no window exists), then type the `zmx attach` command and Enter. Ghostty's default keybindings handle Cmd+T as `new_tab` and Cmd+N as `new_window`.
 
 ```bash
-open -na Ghostty.app --args -e /bin/bash -lc "zmx attach <workspace_name>"
+osascript <<'OSA_EOF'
+tell application "Ghostty" to activate
+delay 0.2
+tell application "System Events"
+  tell process "Ghostty"
+    if (count of windows) is 0 then
+      keystroke "n" using command down
+      delay 0.5
+    else
+      keystroke "t" using command down
+      delay 0.3
+    end if
+    keystroke "zmx attach <workspace_name>"
+    key code 36
+  end tell
+end tell
+OSA_EOF
 ```
 
+Notes:
+- `key code 36` is Return.
+- The `delay` values are conservative; Ghostty's window/tab spawn animation finishes well within 0.5s.
+- This requires the user has granted Accessibility permission to whatever process invokes `osascript` (Terminal/Ghostty/Claude Code). If `osascript` errors with "not allowed assistive access", surface that to the user and fall back to `open -na Ghostty.app --args -e /bin/bash -lc "zmx attach <workspace_name>"` for this one launch — they'll get a window, not a tab, but the session is still attached.
+
 Tell the user:
-> Delegated. New Ghostty window attached. Detach with `Ctrl+\` (keeps session running) or `zmx detach` (detaches all clients). Re-attach: `zmx attach <workspace_name>`.
+> Delegated. New Ghostty tab attached. Detach with `Ctrl+\` (keeps session running) or `zmx detach` (detaches all clients). Re-attach: `zmx attach <workspace_name>`.
 
 **Do not ask for confirmation before creating or delegating.**
 
@@ -541,7 +624,9 @@ The classification is **path-based, not record-stored**: there is no `visibility
 ```json
 {
   "name": "gh-142372-document-pycf",
-  "description": "#142372: Document PyCF_ALLOW_INCOMPLETE_INPUT",
+  "description": "gh-142372: Document PyCF_ALLOW_INCOMPLETE_INPUT",
+  "tracker": "github",
+  "issue_id": "gh-142372",
   "repo_path": "/Users/me/Python/cpython",
   "branch": "gh-142372-document-pycf-allow-incomplete-input",
   "worktree_path": "/Users/me/Python/cpython-worktrees/gh-142372",
@@ -561,6 +646,8 @@ The classification is **path-based, not record-stored**: there is no `visibility
   "blockers": "<current blocker, or null — e.g. 'waiting on @gpshead review', 'PEP 810 decision pending'>"
 }
 ```
+
+`tracker` is `"github"` or `"jira"`; `issue_id` is the canonical token used as the branch prefix. Legacy records may have `description` in the form `"#142372: ..."` (no `gh-` prefix) and no `tracker` / `issue_id` fields — read paths must tolerate this; new writes use the canonical form.
 
 The four narrative fields (`next_step`, `progress`, `tried`, `blockers`) collectively act as the workspace's working memory. They are what makes resuming a stale workspace cheap. Treat them as living text, not metadata to fill once and forget.
 
@@ -603,18 +690,25 @@ Use these exact snippets via the Bash tool. Substitute `<placeholders>` with rea
 
 Each snippet that reads workspaces iterates **both** `private/workspaces/` and `public/workspaces/`. Each snippet that writes a fresh record classifies via `config.json` (`public_repo_path_prefixes`) and routes to `public/` if the `repo_path` matches a prefix, else `private/` (fail-closed). Updates and archives **preserve the record's current location** — they look up where it already lives and write back there.
 
-### Find a workspace by issue number
+### Find a workspace by issue id
+
+`<issue_id>` is the canonical token: `gh-NNNN` for GitHub, `PROJ-NNN` for Jira.
 
 ```python
 python3 - << 'EOF'
 import json, pathlib
 ROOT = pathlib.Path("~/.local/share/darling/").expanduser()
-issue = "<issue_number>"
+issue_id = "<issue_id>"   # e.g. gh-142372 (github) or KEY-1234 (jira)
 match = None
 for d in (ROOT/"private/workspaces", ROOT/"public/workspaces"):
     for f in d.glob("*.json"):
         w = json.loads(f.read_text())
-        if f"gh-{issue}" in w["branch"] or f"#{issue}" in w.get("description", ""):
+        b = w.get("branch", "")
+        desc = w.get("description", "")
+        # Match by branch prefix or description prefix; also support legacy "#NNN: ..." form for github
+        if b == issue_id or b.startswith(issue_id + "-") \
+           or desc.startswith(issue_id + ":") \
+           or (issue_id.startswith("gh-") and desc.startswith(f"#{issue_id[3:]}:")):
             match = w; break
     if match: break
 print(json.dumps(match) if match else "null")
@@ -659,7 +753,9 @@ def is_public(repo_path):
 now = datetime.datetime.utcnow().isoformat() + "Z"
 record = {
     "name": "<workspace_name>",
-    "description": "#<issue_number>: <issue_title>",
+    "description": "<issue_id>: <issue_title>",   # e.g. "gh-142372: Document PyCF..." or "KEY-1234: ..."
+    "tracker": "<github|jira>",
+    "issue_id": "<issue_id>",
     "repo_path": "<repo_path>",
     "branch": "<branch>",
     "worktree_path": "<worktree_path>",
@@ -874,10 +970,14 @@ EOF
 python3 - << 'EOF'
 import re
 title = "<issue_title>"
-issue_number = "<issue_number>"
+issue_id = "<issue_id>"   # e.g. gh-142372 (github) or KEY-1234 (jira)
 slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
-branch = f"gh-{issue_number}-{slug}"
-workspace_name = branch[:60]
+branch = f"{issue_id}-{slug}"
+# Trim if branch exceeds 60 chars (zmx/git workspace name limit)
+if len(branch) > 60:
+    keep = 60 - len(issue_id) - 1
+    branch = f"{issue_id}-{slug[:keep]}".rstrip("-")
+workspace_name = branch
 print(f"slug={slug}\nbranch={branch}\nworkspace_name={workspace_name}")
 EOF
 ```
@@ -904,8 +1004,15 @@ Apply the prefix to every user-facing line emitted while operating as darling, i
 
 ### Worktree conventions
 
-- Branch: `gh-<issue_number>-<slug>`
-- Worktree directory: `<repo_parent>/<repo_name>-worktrees/gh-<issue_number>/`
+Branch and worktree paths use the **canonical issue id** as their prefix:
+
+- GitHub: `gh-<num>` (e.g. `gh-142372`)
+- Jira: the bare key (e.g. `PROJ-1234`) — some orgs enforce server-side commit-message regexes that require the key at the start of every commit and branch.
+
+So:
+
+- Branch: `<issue_id>-<slug>` (e.g. `gh-142372-document-pycf`, `KEY-1234-some-task-summary`)
+- Worktree directory: `<repo_parent>/<repo_name>-worktrees/<issue_id>/`
 - Workspace name == branch name (≤ 60 chars)
 
 ### Deleting a workspace
