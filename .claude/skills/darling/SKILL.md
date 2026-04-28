@@ -487,13 +487,13 @@ Compose a self-contained prompt (the receiving Claude has no memory of this conv
    >
    > **Do NOT open or create pull requests / merge requests by default.** Never run `gh pr create`, `glab mr create`, or any equivalent. If a PR/MR already exists for this branch, pushing updates it — that's fine. If none exists, leave it that way; the user will open it themselves. The project's CLAUDE.md may explicitly authorize draft MR/PR creation — only then may you create one, and only as a draft.
    >
-   > **Commit trailer.** Every commit you author in this workspace must end with a blank line followed by:
+   > **Darling attribution trailer.** Every commit you author in this workspace, **and** every PR/MR description you create or update, must end with a blank line followed by:
    >
    > ```
    > 💞 Generated with the [darling work system](https://github.com/johnslavik/darling)
    > ```
    >
-   > Place it after any `Co-Authored-By:` lines and after the standard Claude Code trailer if you also emit one. Same spirit as the Claude Code trailer — attribution to the workflow that produced the change.
+   > Place it after any `Co-Authored-By:` lines and after the standard Claude Code trailer if you also emit one. For PR/MR bodies the same line goes at the very bottom (mirrors the Claude Code 'Generated with' footer). Same spirit — attribution to the workflow that produced the change.
    >
    > End by reporting the commit SHA and (if a PR/MR exists) its URL plus state (draft / ready)."
 6. **Repo-specific skill block** — see *Repo-specific skill injection* below. If the worktree is a known repo (cpython today), inject the matching paragraph verbatim.
