@@ -1,9 +1,19 @@
 ---
 name: darling
-description: Track in-flight development tasks across git worktrees and ZMX terminal sessions. Use when the user wants to start, resume, manage, or take inventory of in-flight work. STRONG triggers (invoke immediately, do NOT ask clarifying questions first — darling's resolve-task-description handles ambiguity by searching workspaces, knowledge base, and the user's GitHub issues): "let's work on X", "let's fix X", "let's revamp X", "let's continue X", "work on gh-NNNNNN", any GitHub issue number/URL, any Jira issue key (e.g. `PROJ-1234`) or Atlassian browse URL, "open a workspace for <ref>", "darling, ...", or any free-text reference to a task by symbol/phrase ("the lazy modules thing", "the Counter typo"). Inventory triggers: "what are we working on", "what's the status", "where are we", "list my workspaces", "what's pending", "anything queued". Asking the user to repeat what darling already knows (which repo, which branch, what the task means) is a failure mode — go to darling first. Do NOT trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
+description: Track in-flight development tasks across git worktrees. Use when the user wants to start, resume, manage, or take inventory of in-flight work. STRONG triggers (invoke immediately, do NOT ask clarifying questions first — darling's resolve-task-description handles ambiguity by searching workspaces, knowledge base, and the user's GitHub issues): "let's work on X", "let's fix X", "let's revamp X", "let's continue X", "work on gh-NNNNNN", any GitHub issue number/URL, any Jira issue key (e.g. `PROJ-1234`) or Atlassian browse URL, "open a workspace for <ref>", "darling, ...", or any free-text reference to a task by symbol/phrase ("the lazy modules thing", "the Counter typo"). Inventory triggers: "what are we working on", "what's the status", "where are we", "list my workspaces", "what's pending", "anything queued". Asking the user to repeat what darling already knows (which repo, which branch, what the task means) is a failure mode — go to darling first. Do NOT trigger for general questions about an issue, code review of someone else's PR, or how-does-X-work questions unrelated to the user's own in-flight work.
 ---
 
-You are the darling workspace manager. Darling tracks git worktrees + ZMX terminal sessions for in-flight development tasks.
+You are the darling workspace manager. Darling tracks git worktrees for in-flight development tasks. There is no separate terminal session per task — the agent does the work directly in whatever worktree the active task lives in.
+
+## Elastic worktree switching
+
+You operate across multiple worktrees from a single session. cwd is not implicit — pick it per task.
+
+- Before any Bash/Read/Edit on a known workspace, look up its `worktree_path` (run **Find a workspace by issue id** or **Read all workspaces**) and `cd` there in the next Bash call.
+- When the user pivots ("now look at gh-NNNNN", "switch to PROJ-1234"), resolve that workspace and `cd` to its `worktree_path` before any further work. Do not assume the previous worktree is still relevant.
+- When unsure which worktree a question targets, run **status** first and confirm the workspace before acting. Don't grep across the wrong tree.
+- When operating outside any workspace (e.g. user asks a generic question), don't change cwd.
+- Always use absolute paths when the answer must reference files across worktrees in one response.
 
 ## Invocation
 
@@ -116,7 +126,7 @@ For workspaces without a `tracker` field (legacy records), assume `github`.
 
 Cleanup queue prompt:
 
-> "Workspace '<name>' is terminal (<reason: PR merged|PR closed|issue closed>). Delete the workspace: kill ZMX session '<zmx_session>', remove git worktree at '<worktree_path>', archive to knowledge base, delete branch '<branch>'."
+> "Workspace '<name>' is terminal (<reason: PR merged|PR closed|issue closed>). Delete the workspace: remove git worktree at '<worktree_path>', archive to knowledge base, delete branch '<branch>'."
 
 Skip workspaces whose issue is closed but whose PR is still open — that PR may still need follow-up.
 
@@ -312,7 +322,7 @@ Darling supports two issue trackers. The shape of every record (branch, worktree
 
 The branch prefix matters because some Jira-tracked repos enforce commit-message regexes like `^[A-Z]+-\d+ …` via server-side hooks, so the issue key must appear at the start of the branch (and squash commit) — a `gh-` prefix won't pass those hooks.
 
-This table is the extension point for new trackers. Adding YouTrack, Linear, Bugzilla, etc. is just another row: pick an `issue_id` shape that's distinguishable from the existing ones and a fetch tool (typically an MCP server). The rest of darling — branch derivation, worktree paths, workspace records, ZMX launch — already works generically off `tracker` + `issue_id`.
+This table is the extension point for new trackers. Adding YouTrack, Linear, Bugzilla, etc. is just another row: pick an `issue_id` shape that's distinguishable from the existing ones and a fetch tool (typically an MCP server). The rest of darling — branch derivation, worktree paths, workspace records — already works generically off `tracker` + `issue_id`.
 
 #### Extract — issue ref and extra instructions
 
@@ -388,10 +398,8 @@ worktree_path = existing["worktree_path"] if existing else f"{repo_parent}/{repo
 branch = existing["branch"] if existing else None
 workspace_name = (existing.get("name") if existing else None) or (branch[:60] if branch else None)
 
-# --- zmx sessions ---
-r4 = subprocess.run(["zmx", "list", "--short"], capture_output=True, text=True)
-zmx_sessions = [l.strip() for l in r4.stdout.splitlines() if l.strip()]
-session_exists = bool(workspace_name) and workspace_name in zmx_sessions
+# --- worktree on disk? ---
+worktree_exists = pathlib.Path(worktree_path).is_dir()
 
 plan = {
     "action": "resume" if existing else "create",
@@ -403,9 +411,8 @@ plan = {
     "branch": branch,           # null when creating; finalized in phase 2
     "workspace_name": workspace_name,  # null when creating; finalized in phase 2
     "worktree_path": worktree_path,
+    "worktree_exists": worktree_exists,
     "existing_workspace": existing,
-    "session_exists": session_exists,
-    "zmx_sessions": zmx_sessions,
     "created_at": datetime.datetime.utcnow().isoformat() + "Z",
     "errors": errors,
 }
@@ -444,14 +451,9 @@ The description for the workspace record is `"<issue_id>: <title>"` — same for
 
 Now read the phase-1 plan plus the phase-2 fetch results and proceed:
 
-- **`action == "resume"` and `session_exists == true`**: run `zmx history <workspace_name> | tail -50` to check state.
-  - **Claude actively running** (spinner like "Working…", a tool call line in flight) → tell user and stop. Do not interrupt.
-  - **Idle Claude REPL** (last lines show a finished session sitting at "new task?" / `❯` prompt — `zmx run` here does NOT execute a shell command, it types into Claude's input buffer) → **`zmx kill <workspace_name> --force` first**, then relaunch via `zmx run`. Never try to "reuse" the idle REPL.
-  - **Broken / dead shell** (terminal output, no Claude UI) → `zmx kill <workspace_name> --force`, then relaunch via `zmx run`.
-
-  Rule of thumb: any time the existing session has a Claude REPL inside it, kill before relaunching. `zmx run` only safely creates a *new* session.
-- **`action == "resume"` and `session_exists == false`**: relaunch via `zmx run` (no worktree/record creation needed).
-- **`action == "create"`**: create worktree, write record, then launch.
+- **`action == "resume"` and `worktree_exists == true`**: nothing to set up. `cd <worktree_path>` and continue.
+- **`action == "resume"` and `worktree_exists == false`**: the worktree was removed (manual cleanup, host swap, etc.) but the record survived. Recreate the worktree at the recorded `worktree_path` on the recorded `branch` (use `git worktree add <worktree_path> <branch>` — branch already exists, no `-b`), then `cd` there.
+- **`action == "create"`**: create worktree (see below), write record, then `cd` there.
 
 For **create**:
 
@@ -474,98 +476,38 @@ Whether you just created the workspace, resumed it, or merely talked about it, e
 - CI fails or passes on a meaningful push.
 - The work is blocked on an external decision — record the blocker as `next_step`.
 
-#### Launch Claude in the session
+#### Begin work in the worktree
 
-Compose a self-contained prompt (the receiving Claude has no memory of this conversation):
+You are the agent doing the work — there is no separate session to spawn. After cd'ing into `<worktree_path>`, internalise the following context and proceed.
 
-1. `"Work on <issue_id>: <title>."` — use the canonical id (e.g. `gh-142372`, `KEY-1234`). For GitHub, mention the issue URL; for Jira, mention the Atlassian browse URL (`https://<site>.atlassian.net/browse/<KEY>`).
-2. Issue body verbatim
-3. Workspace context: repo path, branch, worktree path. For Jira-tracked work, also remind: commit messages must start with the Jira key (server-side hooks enforce this).
-4. Extra instructions verbatim (high priority — place last)
-5. **Ship-it block** — paste verbatim (the project's CLAUDE.md / CLAUDE.local.md may relax these defaults; if it does, the agent should follow the project file):
-   > "**Shipping is part of the job.** When you reach a meaningful checkpoint (compiles, tests pass, or the requested change is done), commit and push the topic branch — do not end the session with unpushed work. Follow the project's contribution workflow as documented in its CLAUDE.md / CLAUDE.local.md / CONTRIBUTING for the exact remote, commit-message style, and any tracker-specific rules (e.g. commit-message regex requirements for Jira-tracked repos). Never force-push a published branch.
-   >
-   > **Do NOT open or create pull requests / merge requests by default.** Never run `gh pr create`, `glab mr create`, or any equivalent. If a PR/MR already exists for this branch, pushing updates it — that's fine. If none exists, leave it that way; the user will open it themselves. The project's CLAUDE.md may explicitly authorize draft MR/PR creation — only then may you create one, and only as a draft.
-   >
-   > **Darling attribution trailer.** Every commit you author in this workspace, **and** every PR/MR description you create or update, must end with a blank line followed by:
-   >
-   > ```
-   > 💞 Generated with the [darling work system](https://github.com/johnslavik/darling)
-   > ```
-   >
-   > Place it after any `Co-Authored-By:` lines and after the standard Claude Code trailer if you also emit one. For PR/MR bodies the same line goes at the very bottom (mirrors the Claude Code 'Generated with' footer). Same spirit — attribution to the workflow that produced the change.
-   >
-   > End by reporting the commit SHA and (if a PR/MR exists) its URL plus state (draft / ready)."
-6. **Repo-specific skill block** — see *Repo-specific skill injection* below. If the worktree is a known repo (cpython today), inject the matching paragraph verbatim.
-7. **Plan-first instruction** — paste verbatim:
-   > "**Before making any changes, invoke `/plan` to enter plan mode.** Read the project's CLAUDE.md / CLAUDE.local.md for skill instructions, scan the relevant code, and produce a written plan that covers every acceptance criterion in the issue body. Surface assumptions, dependencies on other tickets, and any risk areas. Once the plan is concrete and you're confident it's complete, exit plan mode and execute it. Plan-then-execute every meaningful sub-task — don't sprawl into changes without a current written plan."
-8. `"Begin immediately."`
+1. **The task** — `Work on <issue_id>: <title>.` Use the canonical id (e.g. `gh-142372`, `KEY-1234`). For GitHub, the issue URL is `https://github.com/<owner>/<repo>/issues/<num>`; for Jira, `https://<site>.atlassian.net/browse/<KEY>`.
+2. **Issue body** — read it in full; do not skim. (You already fetched it in phase 2.)
+3. **Workspace context** — repo path, branch, worktree path are in the plan JSON. For Jira-tracked work, commit messages must start with the Jira key — server-side hooks enforce this.
+4. **Extra instructions** — whatever the user appended after the issue ref takes priority over defaults below.
+5. **Ship-it rules** — these apply to the work you do in this worktree (the project's CLAUDE.md / CLAUDE.local.md may relax them; if it does, follow the project file):
+   - Shipping is part of the job. When you reach a meaningful checkpoint (compiles, tests pass, the requested change is done), commit and push the topic branch — do not end with unpushed work. Follow the project's contribution workflow (commit-message style, remote, tracker-specific commit-message regex). Never force-push a published branch.
+   - Do NOT open or create pull requests / merge requests by default. Never run `gh pr create`, `glab mr create`, or equivalent. Pushing to an existing PR/MR is fine. The project's CLAUDE.md may explicitly authorize draft MR/PR creation — only then may you create one, and only as a draft.
+   - **Darling attribution trailer.** Every commit you author in a darling workspace, and every PR/MR body you create or update, must end with a blank line followed by:
+     ```
+     💞 Generated with the [darling work system](https://github.com/johnslavik/darling)
+     ```
+     Place it after any `Co-Authored-By:` lines and after the standard Claude Code trailer if you emit one. For PR/MR bodies, the same line goes at the very bottom.
+   - When you stop, report the commit SHA and (if a PR/MR exists) its URL plus state.
+6. **Repo-specific skill block** — see *Repo-specific skill injection* below. If the worktree is a known repo (cpython today), load the matching skills before any code change.
+7. **Plan first.** Before making any changes, invoke `/plan` to enter plan mode. Read the project's CLAUDE.md / CLAUDE.local.md, scan relevant code, and produce a written plan covering every acceptance criterion in the issue body. Surface assumptions, dependencies on other tickets, and risk areas. Exit plan mode and execute. Plan-then-execute every meaningful sub-task — don't sprawl into changes without a current plan.
+8. Begin.
 
 ##### Repo-specific skill injection
 
-The launched Claude has skills available but no guarantee it will load the right ones. For repos with strong workflow conventions, inject an explicit "load these skills" instruction so the agent can't skip them.
+For repos with strong workflow conventions, load the matching skills before any code change. Detect the repo via `repo_name`, `worktree_path`, and `git -C <repo_path> remote -v`. Path-only matching is enough for forks.
 
-Detect the repo by looking at all of: `repo_name` (from origin remote), `worktree_path`, and the upstream remote (run `git -C <repo_path> remote -v` and look for `python/cpython.git` etc.). Path-only matching is enough for forks where origin points elsewhere.
-
-| Repo signature | Inject this paragraph (verbatim) |
+| Repo signature | Action |
 |---|---|
-| `repo_name == "cpython"` OR upstream/origin contains `python/cpython` OR worktree path matches `*/cpython*` | **"This is a CPython worktree — CPython has strong, codified contribution conventions. Before doing anything else, invoke the `cpython:dev` skill: it orients you on the codebase and pulls in `cpython:build` (compile + tests via `./configure` and `make`, NOT pytest), `cpython:style` (PEP 7/8, patchcheck, the no-type-annotations-in-Lib rule), `cpython:docs` (NEWS entries, versionadded markers, .rst docs), and `cpython:jit` as your workflow needs them. Also follow `cpython-workflow` for branch/commit/issue conventions. These skills are non-optional for CPython work — using them is part of the task, not an extra step."** |
+| `repo_name == "cpython"` OR upstream/origin contains `python/cpython` OR worktree path matches `*/cpython*` | Invoke `cpython:dev` first — it orients you on the codebase and pulls in `cpython:build` (compile + tests via `./configure` and `make`, NOT pytest), `cpython:style` (PEP 7/8, patchcheck, no-type-annotations-in-Lib), `cpython:docs` (NEWS entries, versionadded markers, .rst), `cpython:jit` as needed. Also follow `cpython-workflow` for branch/commit conventions. Non-optional. |
 
-Add a row when a new repo gets its own skill family. Until a repo is in this table, skip step 6 — don't invent skill names.
+Add a row when a new repo gets its own skill family. Until a repo is listed, skip step 6 — don't invent skill names.
 
-Note that the prompt now has 8 steps, not 7: step 7 is the **plan-first instruction**, step 8 is `"Begin immediately."` Don't drop step 7 — making the agent invoke `/plan` first is non-optional.
-
-Write to temp file and launch entirely in the background — never call `zmx attach` (interactive, leaks to caller's terminal):
-
-```bash
-cat > /tmp/darling-<issue_number>.txt << 'DARLING_EOF'
-<prompt content>
-DARLING_EOF
-
-zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "Bash,Read,Edit,Write,Agent" < /tmp/darling-<issue_number>.txt; cd <worktree_path> && exec ${SHELL:-bash} -l'
-```
-
-`zmx run` creates the session if it does not exist. The `-d` flag detaches it completely — no terminal leakage.
-
-The trailing `; cd <worktree_path> && exec ${SHELL:-bash} -l` is load-bearing: when the launched Claude exits (user runs `/exit`, Ctrl-D, or finishes an autonomous task), the wrapping `sh -c` would otherwise terminate, zmx would print `ZMX_TASK_COMPLETED:0`, and the session would die — losing the ability to `claude --resume <session_id>` to continue where the agent left off. Replacing `sh` with an interactive login shell in the worktree keeps the zmx session alive and ready for resumption. Do not drop this clause.
-
-**Now run the zmx session sanity check** (see top of file) to confirm the session is alive AND Claude is actually running. Do not skip this. Only proceed to opening the Ghostty window if the check passes.
-
-#### Open a Ghostty tab attached to the session
-
-After delegation, open a new Ghostty **tab** in the existing window (not a new window) so the user can watch without their workspace getting cluttered with one window per agent.
-
-macOS `open -na Ghostty.app` always spawns a new application window — there's no `+new-tab` action and Ghostty's CLI doesn't accept tab-creation flags on macOS. Drive it through AppleScript instead: activate the app, send Cmd+T (or Cmd+N if no window exists), then type the `zmx attach` command and Enter. Ghostty's default keybindings handle Cmd+T as `new_tab` and Cmd+N as `new_window`.
-
-```bash
-osascript <<'OSA_EOF'
-tell application "Ghostty" to activate
-delay 0.2
-tell application "System Events"
-  tell process "Ghostty"
-    if (count of windows) is 0 then
-      keystroke "n" using command down
-      delay 0.5
-    else
-      keystroke "t" using command down
-      delay 0.3
-    end if
-    keystroke "zmx attach <workspace_name>"
-    key code 36
-  end tell
-end tell
-OSA_EOF
-```
-
-Notes:
-- `key code 36` is Return.
-- The `delay` values are conservative; Ghostty's window/tab spawn animation finishes well within 0.5s.
-- This requires the user has granted Accessibility permission to whatever process invokes `osascript` (Terminal/Ghostty/Claude Code). If `osascript` errors with "not allowed assistive access", surface that to the user and fall back to `open -na Ghostty.app --args -e /bin/bash -lc "zmx attach <workspace_name>"` for this one launch — they'll get a window, not a tab, but the session is still attached.
-
-Tell the user:
-> Delegated. New Ghostty tab attached. Detach with `Ctrl+\` (keeps session running) or `zmx detach` (detaches all clients). Re-attach: `zmx attach <workspace_name>`.
-
-**Do not ask for confirmation before creating or delegating.**
+**Do not ask for confirmation before creating the worktree or beginning work.**
 
 ---
 
@@ -573,30 +515,9 @@ Tell the user:
 
 ### Pipeline self-healing
 
-The darling pipeline must work end-to-end. If any step misbehaves — Ghostty window dies immediately, `zmx attach` exits, `zmx run` does not start the intended command, the plan script errors, a Python snippet fails — **fix this skill file at `.claude/skills/darling/SKILL.md` in the darling repo (typically `~/OSS/darling/`) before reporting back**. The skill is the single source of truth for both the `/darling` slash command and skill-description autoload — installs are symlinks back to that file. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
+The darling pipeline must work end-to-end. If any step misbehaves — the plan script errors, a state snippet fails, `git worktree add` blows up in a way the skill should anticipate, the resolver returns garbage — **fix this skill file at `.claude/skills/darling/SKILL.md` in the darling repo (typically `~/OSS/darling/`) before reporting back**. The skill is the single source of truth for both the `/darling` slash command and skill-description autoload — installs are symlinks back to that file. Patch the broken instruction, document the cause inline, and proceed. Do not just route around the breakage. The user expects darling to keep itself working.
 
 When you patch the skill, finish the user's request first if you can, then surface a one-line note about what you changed.
-
----
-
-### zmx session sanity check
-
-After every `zmx run` launch, verify the session is alive AND running the intended command. zmx silently accepts launches that exit immediately, so a "session created" message is not proof of success.
-
-Run this immediately after `zmx run`:
-
-```bash
-sleep 2
-zmx list --short | grep -qx "<workspace_name>" || echo "MISSING: session not in zmx list"
-zmx history <workspace_name> 2>&1 | tail -20
-```
-
-The history tail must show evidence the intended command is running:
-
-- For Claude launches: a Claude prompt box, "Working…", a tool call line, or the literal prompt text echoed.
-- For raw shell commands: the expected stdout/banner.
-
-If the tail shows a bare shell prompt, "Process exited", "command not found", or is empty after 2s, the launch failed. Surface the history to the user, kill the session with `zmx kill <workspace_name> --force`, fix the root cause (PATH, missing flag, bad quoting), patch this skill per **Pipeline self-healing** above, and retry once. Do not silently leave a dead session in the workspace record.
 
 ---
 
@@ -640,7 +561,6 @@ The classification is **path-based, not record-stored**: there is no `visibility
   "repo_path": "/Users/me/Python/cpython",
   "branch": "gh-142372-document-pycf-allow-incomplete-input",
   "worktree_path": "/Users/me/Python/cpython-worktrees/gh-142372",
-  "zmx_session": "gh-142372-document-pycf",
   "pr_url": null,
   "pr_number": null,
   "pr_repo": null,
@@ -769,7 +689,6 @@ record = {
     "repo_path": "<repo_path>",
     "branch": "<branch>",
     "worktree_path": "<worktree_path>",
-    "zmx_session": "<workspace_name>",
     "pr_url": None, "pr_number": None, "pr_repo": None,
     "created_at": now, "updated_at": now,
     "status": "active", "notes": "",
@@ -983,7 +902,7 @@ title = "<issue_title>"
 issue_id = "<issue_id>"   # e.g. gh-142372 (github) or KEY-1234 (jira)
 slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:50]
 branch = f"{issue_id}-{slug}"
-# Trim if branch exceeds 60 chars (zmx/git workspace name limit)
+# Trim if branch exceeds 60 chars (git branch name limit)
 if len(branch) > 60:
     keep = 60 - len(issue_id) - 1
     branch = f"{issue_id}-{slug[:keep]}".rstrip("-")
@@ -1008,7 +927,7 @@ After it completes, output the key result in one line, also prefixed:
 ```
 `[darling]` <result>
 ```
-Apply the prefix to every user-facing line emitted while operating as darling, including final summaries and the post-delegation "Delegated. New Ghostty window..." message. Code blocks, table rows, and tool-call internals are exempt.
+Apply the prefix to every user-facing line emitted while operating as darling, including final summaries and the post-create "worktree ready, beginning work" line. Code blocks, table rows, and tool-call internals are exempt.
 
 ---
 
@@ -1027,8 +946,7 @@ So:
 
 ### Deleting a workspace
 
-1. `zmx kill <zmx_session> --force` (ignore errors)
-2. `git -C <repo_path> worktree remove --force <worktree_path>`
-3. `git -C <repo_path> branch -D <branch>` (if instructed)
-4. Run **Archive a workspace to knowledge_base**
-5. Run **Delete a workspace record**
+1. `git -C <repo_path> worktree remove --force <worktree_path>`
+2. `git -C <repo_path> branch -D <branch>` (if instructed)
+3. Run **Archive a workspace to knowledge_base**
+4. Run **Delete a workspace record**
