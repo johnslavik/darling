@@ -514,10 +514,12 @@ cat > /tmp/darling-<issue_number>.txt << 'DARLING_EOF'
 <prompt content>
 DARLING_EOF
 
-zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "Bash,Read,Edit,Write,Agent" < /tmp/darling-<issue_number>.txt'
+zmx run <workspace_name> -d sh -c 'cd <worktree_path> && claude --allowedTools "Bash,Read,Edit,Write,Agent" < /tmp/darling-<issue_number>.txt; cd <worktree_path> && exec ${SHELL:-bash} -l'
 ```
 
 `zmx run` creates the session if it does not exist. The `-d` flag detaches it completely — no terminal leakage.
+
+The trailing `; cd <worktree_path> && exec ${SHELL:-bash} -l` is load-bearing: when the launched Claude exits (user runs `/exit`, Ctrl-D, or finishes an autonomous task), the wrapping `sh -c` would otherwise terminate, zmx would print `ZMX_TASK_COMPLETED:0`, and the session would die — losing the ability to `claude --resume <session_id>` to continue where the agent left off. Replacing `sh` with an interactive login shell in the worktree keeps the zmx session alive and ready for resumption. Do not drop this clause.
 
 **Now run the zmx session sanity check** (see top of file) to confirm the session is alive AND Claude is actually running. Do not skip this. Only proceed to opening the Ghostty window if the check passes.
 
