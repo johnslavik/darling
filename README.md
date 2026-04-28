@@ -2,9 +2,9 @@
 
 Claude skill for managing development workspaces.
 
-**One workspace = one git worktree + one ZMX session.**
+**One workspace = one git worktree.**
 
-Invoke `/darling` from Claude with an issue number or GitHub URL to open a workspace. Darling creates the git worktree, starts a ZMX session, and tracks everything in `~/.local/share/darling/`.
+Invoke `/darling` from Claude with an issue number or GitHub URL to open a workspace. Darling creates the git worktree and tracks everything in `~/.local/share/darling/`.
 
 ## Install
 
@@ -35,7 +35,6 @@ To verify autoload, start a fresh agent session and ask "what are we working on"
 
 ## Requirements
 
-- [ZMX](https://github.com/johnslavik/zmx) — terminal session manager
 - [gh](https://cli.github.com/) — GitHub CLI (authenticated)
 
 ## Usage
